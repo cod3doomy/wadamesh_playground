@@ -1,0 +1,39 @@
+# Heltec V4 + Waveshare ST7796S handheld -- partition layout
+#
+# Identical in structure to partitions_tft_touch.csv, but with much larger
+# app slots. Reason: both the stock V4 touch env (99.4%) and our ST7796 env
+# (99.7%) were within ~10 KB of filling a 3.875 MB slot, which leaves no room
+# for the FT6336U touch driver or any UI growth. The flash is 16 MB and the
+# layout was only using 14.9 MB of it, with the map tile cache holding 4.75 MB
+# -- far more than a fresh device needs.
+#
+# Changes vs partitions_tft_touch.csv:
+#   app0  0x3E0000 (3.875 MB) -> 0x5E0000 (5.594 MB)
+#   app1  0x3E0000 (3.875 MB) -> 0x5E0000 (5.594 MB)
+#   tiles 0x4C0000 (4.750 MB) -> 0x100000 (1.000 MB)
+#   spiffs unchanged in spirit, resized to keep the map ending at 0xFF0000
+#
+# The two equal OTA slots are preserved so HTTP OTA still ping-pongs between
+# them. nvs, otadata and coredump keep their sizes.
+#
+# WARNING: this moves the tiles and spiffs offsets. Safe on a freshly erased
+# device, but it orphans any existing map tile pack and spiffs user data. If you
+# have provisioned data on this board, use partitions_tft_touch.csv instead.
+#
+#   0x000000-0x009000   bootloader + partition table
+#   0x009000-0x00E000   nvs         (20 KB)
+#   0x00E000-0x010000   otadata     ( 8 KB)
+#   0x010000-0x5F0000   app0  ota_0 (5.594 MB)
+#   0x5F0000-0xBD0000   app1  ota_1 (5.594 MB)
+#   0xBD0000-0xCD0000   tiles       (1.000 MB, LittleFS type 0x83)
+#   0xCD0000-0xFF0000   spiffs      (3.125 MB)
+#   0xFF0000-0x1000000  coredump    (64 KB)
+#
+# Name,   Type, SubType,  Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x5000,
+otadata,  data, ota,      0xe000,   0x2000,
+app0,     app,  ota_0,    0x10000,  0x5E0000,
+app1,     app,  ota_1,    0x5F0000, 0x5E0000,
+tiles,    data, 0x83,     0xBD0000, 0x100000,
+spiffs,   data, spiffs,   0xCD0000, 0x320000,
+coredump, data, coredump, 0xFF0000, 0x10000,

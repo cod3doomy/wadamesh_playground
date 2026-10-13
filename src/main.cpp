@@ -994,7 +994,14 @@ void setup() {
     Serial.println("[BOOT] initTxtTxUniqueness done"); Serial.flush();
 #else
     }
+    WADA_BISECT("3 before initTxtTxUniqueness");
+#if defined(HELTEC_LORA_V4_ST7796)
+    Serial.println("[BISECT] SKIPPING initTxtTxUniquenessFromRng - "
+                 "DIAGNOSTIC, this panics on this board"); Serial.flush();
+#else
     the_mesh.initTxtTxUniquenessFromRng();
+#endif
+    WADA_BISECT("4 after initTxtTxUniqueness");
 #endif
   }
 #endif
@@ -1013,9 +1020,9 @@ void setup() {
       ExtraFS.begin();
   #endif
   #endif
-  WADA_BISECT("4 before store.begin");
+  WADA_BISECT("5 before store.begin");
   store.begin();
-  WADA_BISECT("5 after store.begin");
+  WADA_BISECT("6 after store.begin");
   the_mesh.begin(
     #ifdef DISPLAY_CLASS
         disp != NULL
