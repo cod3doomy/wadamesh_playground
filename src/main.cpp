@@ -955,9 +955,22 @@ void setup() {
 #endif
     halt();
   }
+#if defined(HELTEC_LORA_V4_ST7796)
+  #define WADA_BISECT(n) do { Serial.printf("[BISECT] %s\n", n); Serial.flush(); } while (0)
+#else
+  #define WADA_BISECT(n) do { } while (0)
+#endif
   Serial.println("[BOOT] radio ok");
+#if defined(HELTEC_LORA_V4_ST7796)
+  // TEMPORARY bring-up bisect: this build panics (esp_reset_reason == 4)
+  // after radio init and before the UI, and the panic text never reaches USB
+  // because the chip resets immediately. Every step is flushed, so the last
+  // line printed is the step that died. Remove once the cause is fixed.
+  WADA_BISECT("1 before fast_rng");
+#endif
 
   fast_rng.begin(radio_driver.getRngSeed());
+  WADA_BISECT("2 after fast_rng");
 
 #if defined(ESP32_PLATFORM) && defined(HAS_TOUCH_UI)
   {
@@ -1000,7 +1013,9 @@ void setup() {
       ExtraFS.begin();
   #endif
   #endif
+  WADA_BISECT("4 before store.begin");
   store.begin();
+  WADA_BISECT("5 after store.begin");
   the_mesh.begin(
     #ifdef DISPLAY_CLASS
         disp != NULL
