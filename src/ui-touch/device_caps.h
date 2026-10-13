@@ -111,6 +111,24 @@
   #define CAP_OTA          1
   #define CAP_LOCK_SCREEN  1
 
+#elif defined(HELTEC_LORA_V4_ST7796)   // ===== Heltec V4-R2 + Waveshare 3.5" ST7796S 480x320 =====
+  // Touch is deliberately ABSENT from this first bring-up env. The Waveshare
+  // panel's controller is an FT6336U and this repo has drivers for GT911 and
+  // CHSC6x but NOT for FT5x06 -- so CAP_TOUCH is 0 rather than a lie. It also
+  // keeps the touch driver from touching the board I2C bus: the only other
+  // device on that bus is the M5Stack CardKB, and the only GT911 driver we could
+  // link (src/helpers/input/TDeckTouch.cpp) unconditionally re-routes Wire to
+  // its own pins at begin(), which would take the CardKB's keyboard away.
+  // This env excludes TDeckTouch.cpp for exactly that reason.
+  #define CAP_TOUCH        0
+  #define CAP_ROTATABLE    0   // native 480x320 landscape (see St7796WaveshareDisplay.h)
+  #define CAP_LARGE_SCREEN 0   // native 480x320, no upscaling
+  #define CAP_SD           0   // SPIFFS only
+  #define CAP_FILESYSTEM   0   // no browsable filesystem
+  #define CAP_GPS          1
+  #define CAP_OTA          1
+  #define CAP_LOCK_SCREEN  0
+
 #elif defined(HELTEC_LORA_V4_R8)      // ===== Heltec WiFi LoRa 32 V4-R8 (ESP32-S3R8, 8 MB PSRAM) =====
   // Same board family + panel as the V4 TFT (the build also defines
   // HELTEC_LORA_V4_TFT to reuse all its UI code); the deltas are 8 MB octal

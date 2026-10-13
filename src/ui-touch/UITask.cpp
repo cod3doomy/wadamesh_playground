@@ -268,6 +268,12 @@ static_assert(ChannelSenderSplit::kMaxWireName >= (size_t)UITask::MAX_SENDER_NAM
     extern LGFXDisplay display;
   #elif defined(HAS_TDISPLAY_P4)
     extern DISPLAY_CLASS display;            // RM69A10Display (AMOLED) or HI8561Display (LCD) — set in CMakeLists
+  #elif defined(HELTEC_LORA_V4_ST7796)
+    // Waveshare 3.5" ST7796S 480x320 on a V4-R2, via TFT_eSPI (variants/heltec_v4).
+    // Must match target.h's `extern DISPLAY_CLASS display;` exactly, so the two
+    // declarations don't collide. Declared by concrete type like every sibling
+    // above, since this TU calls setBrightness()/panelSleep() on it.
+    extern St7796WaveshareDisplay display;
   #else
     extern ST7789LCDDisplay display;
   #endif
@@ -32989,6 +32995,8 @@ static int wifiScanWatchdogSafe(uint32_t cap_ms, uint16_t per_chan_ms = 300) {
 #define WADA_BOARD_ID "wio-tracker-l2"
 #elif defined(HAS_CROWPANEL_35)
 #define WADA_BOARD_ID "crowpanel-35"
+#elif defined(HELTEC_LORA_V4_ST7796)      // must precede the V4-TFT fallback
+#define WADA_BOARD_ID "heltec-v4-st7796"
 #elif defined(HELTEC_LORA_V4_TFT)
 #define WADA_BOARD_ID "heltec-v4-tft"
 #else

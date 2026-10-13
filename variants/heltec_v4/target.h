@@ -16,6 +16,11 @@ extern "C" void set_boot_phase(int phase);
 #ifdef DISPLAY_CLASS
 #ifdef HELTEC_LORA_V4_OLED
     #include <helpers/ui/SSD1306Display.h>
+#elif defined(HELTEC_LORA_V4_ST7796)
+    // Waveshare 3.5" ST7796S 480x320 panel on a V4-R2, via TFT_eSPI. Must come
+    // BEFORE the HELTEC_LORA_V4_TFT branch so it can never be shadowed by the
+    // stock 240x320 ST7789 include even if a build ever defines both.
+    #include "St7796WaveshareDisplay.h"
 #elif defined(HELTEC_LORA_V4_R8)
     // V4-R8 + Expansion Kit V2: TFT on hardware SPI (shared with micro-SD). Must
     // come before the HELTEC_LORA_V4_TFT branch — the R8 build defines both.
