@@ -1,7 +1,7 @@
 # wadamesh language file
 # canonical source - translators: edit this file and PR it
 # code: uk
-# ver: 24
+# ver: 25
 # name: Українська
 # base: uk
  (device behind)	 (пристрій відстає)
@@ -1334,7 +1334,7 @@ Aug	Aug
 August	August
 Blocked	Blocked
 Change PIN	Change PIN
-Channel	Channel
+Channel	Канал
 Channels	Channels
 Chat	Chat
 Chat icon reset	Chat icon reset
@@ -1495,7 +1495,7 @@ Upload of %s stopped	Upload of %s stopped
 Used	Used
 VNC	VNC
 Waiting for the computer	Waiting for the computer
-Web	Web
+Web	Веб
 Wed	Wed
 Wednesday	Wednesday
 While this screen is open, the companion app cannot use USB.	While this screen is open, the companion app cannot use USB.
@@ -1916,3 +1916,17 @@ Temperature in Fahrenheit	Температура за Фаренгейтом
 Up to 15 characters	До 15 символів
 Favorites only	Лише обрані
 Home is full: hold a widget to remove one	Home is full: hold a widget to remove one
+The Bluetooth chip is not responding.	Чип Bluetooth не відповідає.
+Bluetooth could not start. Restart the device and try again.	Не вдалося запустити Bluetooth. Перезапустіть пристрій і спробуйте ще раз.
+Record track	Записувати трек
+Recording track	Йде запис треку
+Recording needs an SD card	Для запису потрібна SD-картка
+Could not write to the SD card	Не вдалося записати на SD-картку
+Try the card again	Спробувати картку знову
+Next page	Наступна сторінка
+Previous page	Попередня сторінка
+Back to the start	На початок
+Track saved: %.2f km, %u points	Track saved: %.2f km, %u points
+Track stopped: the SD card is not writable	Track stopped: the SD card is not writable
+The SD card could not be read, so this start runs from internal storage. Your node's key is kept. Messages, contacts and settings on the card come back when it reads again.	The SD card could not be read, so this start runs from internal storage. Your node's key is kept. Messages, contacts and settings on the card come back when it reads again.
+The SD card could not be read, so this start runs from internal storage. This device had no copy of the node's key, so it started with a new one; the card still holds the old key, and its messages, contacts and settings.	The SD card could not be read, so this start runs from internal storage. This device had no copy of the node's key, so it started with a new one; the card still holds the old key, and its messages, contacts and settings.

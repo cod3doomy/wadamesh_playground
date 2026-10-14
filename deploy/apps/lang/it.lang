@@ -1,7 +1,7 @@
 # wadamesh language file
 # canonical source - translators: edit this file and PR it
 # code: it
-# ver: 24
+# ver: 25
 # name: Italiano
 # base: it
  (device behind)	 (dispositivo indietro)
@@ -1333,7 +1333,7 @@ Aug	Aug
 August	August
 Blocked	Blocked
 Change PIN	Change PIN
-Channel	Channel
+Channel	Canale
 Channels	Channels
 Chat	Chat
 Chat icon reset	Chat icon reset
@@ -1915,3 +1915,17 @@ Temperature in Fahrenheit	Temperatura in Fahrenheit
 Up to 15 characters	Fino a 15 caratteri
 Favorites only	Solo preferiti
 Home is full: hold a widget to remove one	Home is full: hold a widget to remove one
+The Bluetooth chip is not responding.	Il chip Bluetooth non risponde.
+Bluetooth could not start. Restart the device and try again.	Impossibile avviare il Bluetooth. Riavvia il dispositivo e riprova.
+Record track	Registra traccia
+Recording track	Registrazione traccia
+Recording needs an SD card	Per registrare serve una scheda SD
+Could not write to the SD card	Impossibile scrivere sulla scheda SD
+Try the card again	Riprova la scheda
+Next page	Pagina successiva
+Previous page	Pagina precedente
+Back to the start	Torna all'inizio
+Track saved: %.2f km, %u points	Track saved: %.2f km, %u points
+Track stopped: the SD card is not writable	Track stopped: the SD card is not writable
+The SD card could not be read, so this start runs from internal storage. Your node's key is kept. Messages, contacts and settings on the card come back when it reads again.	The SD card could not be read, so this start runs from internal storage. Your node's key is kept. Messages, contacts and settings on the card come back when it reads again.
+The SD card could not be read, so this start runs from internal storage. This device had no copy of the node's key, so it started with a new one; the card still holds the old key, and its messages, contacts and settings.	The SD card could not be read, so this start runs from internal storage. This device had no copy of the node's key, so it started with a new one; the card still holds the old key, and its messages, contacts and settings.

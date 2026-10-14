@@ -36,6 +36,19 @@
   #define CAP_LOCK_SCREEN  0   // GPIO0 is LoRa NSS, no separate button to unlock
   #define CAP_BATTERY      0   // no battery voltage sensing
 
+#elif defined(HAS_CROWPANEL_50)          // ===== Elecrow CrowPanel Advance 5.0 (ESP32-S3) =====
+  #define CAP_TOUCH        1   // GT911 capacitive touch
+  #define CAP_ROTATABLE    1   // ST7262 RGB panel, native 800x480 landscape = UI rotation 3
+  #define CAP_LARGE_SCREEN 1   // native 800x480: large-panel layouts and the UI-size fonts
+  // The function DIP switch gives GPIO4/5/6 to the radio, so the card slot is dead
+  // while the radio works; File Transfer uses the internal tiles partition instead.
+  #define CAP_SD           0
+  #define CAP_FILESYSTEM   0
+  #define CAP_GPS          0   // no free GPIO pair for a UART (the RGB bus takes 17/18)
+  #define CAP_OTA          1
+  #define CAP_LOCK_SCREEN  0   // no user button to unlock with
+  #define CAP_BATTERY      0   // no battery voltage sensing
+
 #elif defined(HAS_WIO_TRACKER_L2)        // ===== Seeed Wio Tracker L2 (ESP32-S3) =====
   #define CAP_TOUCH        1
   #define CAP_ROTATABLE    0
@@ -302,9 +315,10 @@
 // Both can opt into the bounded, pre-transport saved-Wi-Fi sync from #383. The
 // T-Display P4's PCF8563 has come back asserting impossible dates, so it gets the
 // same fallback -- on the esp-hosted C6 build only: the sync drives Arduino's real
-// WiFi, which the legacy ESP-AT build must never touch.
+// WiFi, which the legacy ESP-AT build must never touch. The Wio Tracker L2 has
+// no RTC and an ESP32-S3 radio, so it gets the same opt-in.
 #if defined(HAS_TDECK_GT911) || defined(HAS_TDECK_PRO) || defined(HAS_THINKNODE_M9) || \
-    (defined(HAS_TDISPLAY_P4) && TDP4_C6_HOSTED)
+    defined(HAS_WIO_TRACKER_L2) || (defined(HAS_TDISPLAY_P4) && TDP4_C6_HOSTED)
   #define CAP_BOOT_TIME_SYNC 1
 #else
   #define CAP_BOOT_TIME_SYNC 0

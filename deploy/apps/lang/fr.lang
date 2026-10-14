@@ -1,7 +1,7 @@
 # wadamesh language file
 # canonical source - translators: edit this file and PR it
 # code: fr
-# ver: 24
+# ver: 25
 # name: Français
 # base: fr
  (device behind)	 (appareil en retard)
@@ -1333,7 +1333,7 @@ Aug	Aug
 August	August
 Blocked	Blocked
 Change PIN	Change PIN
-Channel	Channel
+Channel	Canal
 Channels	Channels
 Chat	Chat
 Chat icon reset	Chat icon reset
@@ -1915,3 +1915,17 @@ Temperature in Fahrenheit	Température en Fahrenheit
 Up to 15 characters	15 caractères maximum
 Favorites only	Favoris uniquement
 Home is full: hold a widget to remove one	Home is full: hold a widget to remove one
+The Bluetooth chip is not responding.	La puce Bluetooth ne répond pas.
+Bluetooth could not start. Restart the device and try again.	Le Bluetooth n'a pas pu démarrer. Redémarrez l'appareil et réessayez.
+Record track	Enregistrer le trajet
+Recording track	Enregistrement du trajet
+Recording needs an SD card	L'enregistrement nécessite une carte SD
+Could not write to the SD card	Impossible d'écrire sur la carte SD
+Try the card again	Réessayer la carte
+Next page	Page suivante
+Previous page	Page précédente
+Back to the start	Retour au début
+Track saved: %.2f km, %u points	Track saved: %.2f km, %u points
+Track stopped: the SD card is not writable	Track stopped: the SD card is not writable
+The SD card could not be read, so this start runs from internal storage. Your node's key is kept. Messages, contacts and settings on the card come back when it reads again.	The SD card could not be read, so this start runs from internal storage. Your node's key is kept. Messages, contacts and settings on the card come back when it reads again.
+The SD card could not be read, so this start runs from internal storage. This device had no copy of the node's key, so it started with a new one; the card still holds the old key, and its messages, contacts and settings.	The SD card could not be read, so this start runs from internal storage. This device had no copy of the node's key, so it started with a new one; the card still holds the old key, and its messages, contacts and settings.
