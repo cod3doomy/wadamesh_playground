@@ -1,4 +1,6 @@
 #include <Arduino.h>   // needed for PlatformIO
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <Mesh.h>
 #include "MyMesh.h"
 #if defined(ESP32_PLATFORM)
@@ -23,13 +25,7 @@
 #include "ui-touch/device_caps.h"            // CAP_BLE_KEYBOARD: keyboard mode keeps the phone link paused from boot
 #endif
 
-#if defined(WADA_LVGL_O2)
-// LVGL compiled at -O2 (scripts/build/perf_lvgl.py) goes 160 bytes deeper into the
-// loop task's stack at its deepest (measured on the T-Deck: 2108 -> 1948 bytes left of
-// the framework's 8 KB). 1 KB more leaves more room than before; the draw band that
-// moved to PSRAM freed ten times that much internal RAM.
-SET_LOOP_TASK_STACK_SIZE(9 * 1024);
-#endif
+
 
 // Believe it or not, this std C function is busted on some platforms!
 static uint32_t _atoi(const char* sp) {
@@ -218,6 +214,24 @@ SimpleMeshTables tables;
 // static-init (PSRAM is already up; the UITask psAlloc statics rely on the same),
 // so timing/behaviour are identical to the old direct global — only the address
 // moves off internal DRAM. heap_caps falls back to internal RAM if PSRAM is absent.
+#if defined(HELTEC_LORA_V4_ST7796)
+  // DIAGNOSTIC: this build keeps the_mesh in internal DRAM instead of PSRAM.
+  // the_mesh is placement-new'd into PSRAM at static-init and every call on it
+  // is a virtual dispatch that reads the vtable pointer out of PSRAM. If PSRAM
+  // is not CPU-accessible as assumed at that point, every such call faults --
+  // which matches the observed ESP_RST_PANIC between "[BOOT] radio ok" and the
+  // UI coming up. ~42 KB of internal DRAM is affordable here: this build uses
+  // no WiFi, and the LCD sprite is only ~38 KB.
+  // This branch is a real global, so the constructor runs at static-init exactly
+  // as the placement-new does -- only the address changes.
+  static MyMesh the_mesh_storage(
+    radio_driver, fast_rng, rtc_clock, tables, store
+  #ifdef DISPLAY_CLASS
+      , &ui_task
+  #endif
+  );
+  MyMesh& the_mesh = the_mesh_storage;
+#else
 static MyMesh& makeTheMesh() {
   void* mem = heap_caps_malloc(sizeof(MyMesh), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!mem) mem = malloc(sizeof(MyMesh));   // no-PSRAM fallback: behaves as before
@@ -228,6 +242,7 @@ static MyMesh& makeTheMesh() {
   );
 }
 MyMesh& the_mesh = makeTheMesh();
+#endif
 #else
 MyMesh the_mesh(radio_driver, fast_rng, rtc_clock, tables, store
    #ifdef DISPLAY_CLASS
@@ -783,13 +798,179 @@ static void wioTrackerL2GpsProbe() {
 #endif  // HAS_WIO_TRACKER_L2 && WIO_TRACKER_L2_GPS_PROBE
 
 
+#if defined(HELTEC_LORA_V4_ST7796)
+// TEMPORARY bring-up diagnostic -- retained-memory boot breadcrumbs.
+// Defined here, at file scope, because both the retained variables and the
+// macros are needed by setup()'s first statement.
+#if defined(HELTEC_LORA_V4_ST7796)
+// TEMPORARY bring-up diagnostic.
+//
+// Printing a marker and flushing it is NOT a reliable boundary here: this
+// build panics and the chip resets immediately, and the USB CDC write in
+// flight is discarded. A marker printed just before the fault was observed
+// both present and absent across otherwise identical boots, which made every
+// line-marker reading ambiguous.
+//
+// RTC_NOINIT_ATTR does survive the panic reset. The last marker reached is
+// therefore recorded in retained memory, and reported at the top of the NEXT
+// boot, before anything else can overwrite or fault. The number is a plain
+// counter, so it survives even if the string table is unavailable.
+#define WADA_BISECT(n) do { \
+    wada_bc_step = wada_bc_step + 1; \
+    strncpy(wada_bc_name, n, sizeof(wada_bc_name) - 1); \
+    wada_bc_name[sizeof(wada_bc_name) - 1] = 0; \
+    Serial.printf("[BISECT] %u %s\n", (unsigned)wada_bc_step, n); Serial.flush(); \
+  } while (0)
+// Report where the PREVIOUS boot died. Must run before the first WADA_BISECT
+// of this boot, or it would immediately clobber the breadcrumb.
+#define WADA_BC_REPORT() do { \
+    Serial.printf("[BC] previous boot died after step %u: %s\n", \
+                  (unsigned)wada_bc_step, wada_bc_name[0] ? wada_bc_name : "(none)"); \
+    Serial.flush(); \
+    wada_bc_step = 0; wada_bc_name[0] = 0; \
+  } while (0)
+#else
+#define WADA_BISECT(n) do { } while (0)
+#define WADA_BC_REPORT() do { } while (0)
+#endif
+
+// RTC_NOINIT_ATTR is a section attribute, so these must be globals, not locals
+// inside setup(). They survive the panic reset, which USB CDC output does not.
+RTC_NOINIT_ATTR uint32_t wada_bc_step = 0;
+RTC_NOINIT_ATTR char     wada_bc_name[48] = {0};
+RTC_NOINIT_ATTR uint32_t wada_bc_free_stack = 0;
+// Per-stage stack high-water samples. Slots are indexed by position and
+// overwritten each boot; slots past the fault point are never written.
+
+// Plain-RAM snapshot of the above, taken at setup() entry and reported once the
+// USB link is up.
+// --- stack profiler (retained; reported next boot) ---
+// Slots are indexed by call order and overwritten each boot. A slot past the
+// fault point is never written, so it reports "not reached".
+#define WADA_STK_SLOTS 10
+RTC_NOINIT_ATTR uint32_t wada_stk_free[WADA_STK_SLOTS] = {0};
+RTC_NOINIT_ATTR uint32_t wada_stk_done[WADA_STK_SLOTS] = {0};
+static const char *wada_stk_labels[WADA_STK_SLOTS] = {
+  "setup entry", "after radio ok", "before fast_rng", "at touch_boot_n",
+  "before SPIFFS.begin", "5", "6", "7", "8", "9"
+};
+static uint32_t wada_stk_idx = 0;
+#define WADA_STK() do { \
+    if (wada_stk_idx < WADA_STK_SLOTS) { \
+      wada_stk_free[wada_stk_idx] = (uint32_t)uxTaskGetStackHighWaterMark(nullptr); \
+      wada_stk_done[wada_stk_idx] = 1; \
+      wada_stk_idx++; \
+    } \
+  } while (0)
+
+
+#if defined(HELTEC_LORA_V4_ST7796)
+#include "esp_core_dump.h"
+#include "spiram.h"
+
+// Snapshot the previous crash's summary at setup() entry. The IDF clears the
+// stored image once it has been read, so this must happen before any other
+// coredump-aware code runs, and the printing is deferred until serial is up.
+static bool     wada_have_coredump = false;
+static char     wada_cd_task[24] = {0};
+static uint32_t wada_cd_pc = 0;
+static uint32_t wada_cd_bt[16] = {0};
+static uint32_t wada_cd_depth = 0;
+static uint32_t wada_cd_cause = 0;
+static uint32_t wada_cd_vaddr = 0;
+
+static void wada_coredump_snapshot() {
+  esp_core_dump_summary_t s;
+  if (esp_core_dump_get_summary(&s) != ESP_OK) return;
+  wada_have_coredump = true;
+  strncpy(wada_cd_task, s.exc_task, sizeof(wada_cd_task) - 1);
+  wada_cd_pc = s.exc_pc;
+  wada_cd_depth = s.exc_bt_info.depth;
+  for (uint32_t i = 0; i < 16 && i < s.exc_bt_info.depth; ++i) wada_cd_bt[i] = s.exc_bt_info.bt[i];
+  wada_cd_cause = s.ex_info.exc_cause;
+  wada_cd_vaddr = s.ex_info.exc_vaddr;
+}
+
+static void wada_coredump_report() {
+  if (!wada_have_coredump) return;
+  Serial.println("\n===== COREDUMP FROM PREVIOUS BOOT =====");
+  Serial.printf("task=%s  pc=0x%08x  depth=%u  corrupted=%d\n",
+                wada_cd_task, (unsigned)wada_cd_pc,
+                (unsigned)wada_cd_depth, 0);
+  Serial.printf("exc_cause=%u  exc_vaddr=0x%08x\n",
+                (unsigned)wada_cd_cause, (unsigned)wada_cd_vaddr);
+  Serial.println("backtrace:");
+  for (uint32_t i = 0; i < wada_cd_depth && i < 16; ++i) {
+    Serial.printf("  #%02u  0x%08x\n", (unsigned)i, (unsigned)wada_cd_bt[i]);
+  }
+  Serial.println("===== end coredump =====");
+  Serial.flush();
+  wada_have_coredump = false;
+}
+#endif
+
+
+#if defined(HELTEC_LORA_V4_ST7796)
+// TEMPORARY diagnostic: is PSRAM actually present, and what does the heap look
+// like at each boot stage?
+static void wada_heap_report(const char *when) {
+  // esp_spiram_get_size() returns 0 when no PSRAM was brought up. Note that
+  // spiram_psram.h's psram_get_size() is a DIFFERENT function that returns
+  // PSRAM_SIZE_MAX (an enum, not 0) when PSRAM is absent -- easy to
+  // misread as "a big PSRAM exists", which is exactly the trap the
+  // previous heap report fell into.
+  const size_t psram_bytes = esp_spiram_get_size();
+  Serial.printf("[HEAP] %-22s internal free=%8u largest=%8u | PSRAM=%u",
+                when,
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                (unsigned)psram_bytes);
+  if (psram_bytes) {
+    Serial.printf(" psram_free=%8u psram_largest=%8u",
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+  } else {
+    Serial.print(" (NO PSRAM -- MALLOC_CAP_SPIRAM allocations fall back to internal)");
+  }
+  Serial.println();
+  Serial.flush();
+}
+#endif
+
+static uint32_t wada_prev_step = 0;
+static char     wada_prev_name[48] = {0};
+static uint32_t wada_prev_free_stack = 0;
+
+#endif
+
 void setup() {
   Serial.begin(115200);
+#if defined(HELTEC_LORA_V4_ST7796)
+  wada_heap_report("setup entry");
+#endif
+#if defined(HELTEC_LORA_V4_ST7796)
+  wada_coredump_snapshot();
+#endif
+#if defined(HELTEC_LORA_V4_ST7796)
+  // Snapshot the PREVIOUS boot's breadcrumb into ordinary RAM. It must be read
+  // here, before this boot's first marker overwrites it -- but it must NOT be
+  // PRINTED here: this runs before USB CDC enumerates, so the host discards it.
+  // wada_prev_* is reported later, next to [BOOT] touch_boot_n, which arrives on
+  // every boot.
+  wada_prev_step = wada_bc_step;
+  wada_prev_free_stack = wada_bc_free_stack;
+  strncpy(wada_prev_name, wada_bc_name, sizeof(wada_prev_name) - 1);
+  wada_prev_name[sizeof(wada_prev_name) - 1] = 0;
+  wada_bc_step = 0;
+  wada_bc_name[0] = 0;
+  wada_bc_free_stack = 0;
+#endif
 #if defined(HAS_RAK_TAP_V2)
   delay(1500);  // USB-CDC enumeration before boot logs
 #else
   delay(200);
 #endif
+  WADA_STK();   // entry
   Serial.println("[BOOT] setup start");
   // The SDK ships CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096: every allocation
   // under 4 KB is forced into internal DRAM even when PSRAM is free. On the V4
@@ -955,10 +1136,9 @@ void setup() {
 #endif
     halt();
   }
+  WADA_STK();   // after radio ok
 #if defined(HELTEC_LORA_V4_ST7796)
-  #define WADA_BISECT(n) do { Serial.printf("[BISECT] %s\n", n); Serial.flush(); } while (0)
-#else
-  #define WADA_BISECT(n) do { } while (0)
+  wada_heap_report("after radio init");
 #endif
   Serial.println("[BOOT] radio ok");
 #if defined(HELTEC_LORA_V4_ST7796)
@@ -969,6 +1149,8 @@ void setup() {
   WADA_BISECT("1 before fast_rng");
 #endif
 
+  WADA_BISECT("pre-fast-rng");
+  WADA_STK();   // before fast_rng
   fast_rng.begin(radio_driver.getRngSeed());
   WADA_BISECT("2 after fast_rng");
 
@@ -986,6 +1168,47 @@ void setup() {
                     static_cast<unsigned long>(bn),
                     static_cast<unsigned>(esp_reset_reason()),
                     static_cast<unsigned>(nvs_free));
+#if defined(HELTEC_LORA_V4_ST7796)
+      // Printed HERE, not at setup() entry, because this is the first point at
+      // which serial output is reliably reaching the host. wada_prev_* was
+      // snapshotted at setup() entry while the retained breadcrumb still held
+      // the value from the previous (panicked) boot.
+  WADA_STK();   // at touch_boot_n report
+      Serial.printf("[BC] PREVIOUS boot died after step %u: %s"
+                    "  [free stack at that point: %u of %u]\n",
+                    (unsigned)wada_prev_step,
+                    wada_prev_name[0] ? wada_prev_name : "(none)",
+                    (unsigned)wada_prev_free_stack,
+                    (unsigned)CONFIG_ARDUINO_LOOP_STACK_SIZE);
+      Serial.flush();
+#if defined(HELTEC_LORA_V4_ST7796)
+      wada_coredump_report();
+#endif
+      // Per-stage stack profile from the previous boot, in call order. Shows
+      // which setup() call consumed the loop task's 8192 bytes.
+      for (uint32_t i = 0; i < WADA_STK_SLOTS; ++i) {
+        if (wada_stk_done[i]) {
+          Serial.printf("[STKPROF] %u  %-20s %5u free\n",
+                        (unsigned)i, wada_stk_labels[i],
+                        (unsigned)wada_stk_free[i]);
+        } else {
+          Serial.printf("[STKPROF] %u  %-20s  not reached\n",
+                        (unsigned)i, wada_stk_labels[i]);
+        }
+      }
+      Serial.flush();
+      wada_stk_idx = 0;
+      for (uint32_t i = 0; i < WADA_STK_SLOTS; ++i) wada_stk_done[i] = 0;
+#endif
+      WADA_BISECT("3a after touch_boot_n printf");
+      {
+        Preferences p2;
+        bool b2 = p2.begin("mcprobe", false);
+        Serial.printf("[BISECT] 3b second prefs.begin=%d\n", (int)b2);
+        Serial.flush();
+        if (b2) p2.end();
+      }
+      WADA_BISECT("3c after second prefs block");
 #if defined(HAS_RAK_TAP_V2)
       Serial.flush();
     }
@@ -1069,7 +1292,36 @@ void setup() {
   // ("Store data on SD"). The SD shares the LoRa SPI bus, already brought up by
   // radio_init() above, so SD.begin's spi.begin is a no-op. Graceful: any SD
   // failure falls back to SPIFFS so the device always boots.
+  WADA_BISECT("7 before SPIFFS.begin");
+#if defined(HELTEC_LORA_V4_ST7796)
+  wada_heap_report("before SPIFFS.begin");
+#endif
+#if defined(HELTEC_LORA_V4_ST7796)
+  // Stack headroom at the fault site, stored in retained memory rather than
+  // printed: a printf immediately before a panicking call does not reach the
+  // host. Reported on the next boot next to the [BC] breadcrumb.
+  wada_prev_free_stack = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);
+  WADA_BISECT("7b stack sampled");
+  // ONE-SHOT DIAGNOSTIC: skip the SPIFFS mount entirely.
+  //
+  // Confirmed backtrace: calloc() inside esp_spiffs_init -> tlsf_block_size_max
+  // -> LoadProhibited at vaddr 0x0000000F. A full flash erase did not change it,
+  // so the free list SPIFFS walks is already corrupt before this call.
+  //
+  // Skipping the mount splits the two remaining possibilities in one boot:
+  //   A) boot continues to the UI  -> corruption is SPIFFS-path-specific
+  //   B) it faults at the next malloc -> corruption is global to the heap, and
+  //      nothing in the SPIFFS path is worth fixing
+  //
+  // The project already treats SPIFFS as best-effort (spiffs_ok is checked and
+  // the store falls back), so skipping it is a supported shape, not a hack.
+  Serial.println("[SPIFFSTEST] SKIPPING SPIFFS.begin() - diagnostic");
+  Serial.flush();
+  bool spiffs_ok = false;
+#else
   bool spiffs_ok = SPIFFS.begin(false);   // try first WITHOUT auto-format
+#endif
+  WADA_BISECT("8 after SPIFFS.begin");
   bool sd_storage = false;
 #if defined(HAS_WIO_TRACKER_L2)
   // This target uses a dedicated one-bit SD_MMC bus rather than the LoRa SPI
@@ -1450,6 +1702,7 @@ void setup() {
   // exist, or deferred to a UI-driven action with a progress notice), and to
   // confirm on hardware that a cold first-format boot survives.
   if (!sd_storage && !spiffs_ok) SPIFFS.begin(true);   // last resort: format SPIFFS
+  WADA_BISECT("9 after spiffs format fallback");
   Serial.printf("[BOOT] storage: %s\n", sd_storage ? "SD /meshcomod" : "SPIFFS");
 #if defined(ESP32_PLATFORM) && defined(HAS_TOUCH_UI)
   // Route touch settings + Wi-Fi creds to the active filesystem (SD when that's
@@ -1468,20 +1721,29 @@ void setup() {
   // the backend, caching the settings blob from legacy NVS. Re-read it now so
   // file-saved values (theme accent, brightness, language, …) take effect this
   // boot — otherwise a theme change "reverts" on every restart.
+  WADA_BISECT("10 after SdNvsPrefs::useFile");
+  WADA_BISECT("B1");
   touchPrefsReload();
+  WADA_BISECT("11 after touchPrefsReload");
   // Keep the boot logo's NVS copy of the rotation in step with the real one.
   touchPrefsSyncBootUiRotation();
   // Restore replay protection before mesh startup or optional cold-boot NTP.
   // A trusted correction can then pull a poisoned future floor back through
   // ClockFloorRTC's guarded set path without a later restore undoing it.
+  WADA_BISECT("12 before rtc seedFloor");
+  WADA_BISECT("pre-seedFloor");
   rtc_clock.seedFloor(touchPrefsGetClockFloor());
+  WADA_BISECT("13 after seedFloor");
   rtc_clock.seedSystemClock();
+  WADA_BISECT("14 after seedSystemClock");
 #if defined(HAS_RAK_TAP_V2)
   Serial.println("[BOOT] prefs_backend ok"); Serial.flush();
   Serial.println("[BOOT] touchPrefsReload ok"); Serial.flush();
 #endif
 #endif
+  WADA_BISECT("15 before store.begin");
   store.begin();
+  WADA_BISECT("16 after store.begin");
 #if defined(HAS_RAK_TAP_V2)
   Serial.println("[BOOT] store ok"); Serial.flush();
   Serial.println("[BOOT] calling mesh.begin..."); Serial.flush();
@@ -1493,6 +1755,10 @@ void setup() {
         false
     #endif
   );
+  WADA_BISECT("17 after mesh.begin");
+#if defined(HELTEC_LORA_V4_ST7796)
+  wada_heap_report("after mesh.begin");
+#endif
   Serial.println("[BOOT] mesh ok");
 #if defined(HAS_RAK_TAP_V2)
   Serial.flush();
@@ -1771,17 +2037,31 @@ void setup() {
 #if defined(HAS_WIO_TRACKER_L2) && defined(WIO_TRACKER_L2_GPS_PROBE)
   wioTrackerL2GpsProbe();   // TEMP DIAGNOSTIC — must precede sensors.begin()'s Serial1.begin()
 #endif
+  WADA_BISECT("pre-sensors-begin");
   sensors.begin();
+  WADA_BISECT("post-sensors-begin");
 
 #ifdef DISPLAY_CLASS
+  WADA_BISECT("pre-ui_task-begin");
   ui_task.begin(disp, &sensors, the_mesh.getNodePrefs());  // still want to pass this in as dependency, as prefs might be moved
+#if defined(HELTEC_LORA_V4_ST7796)
+  wada_heap_report("after ui_task.begin");
+#endif
   Serial.println("[BOOT] ui ready");
 #if defined(TLORA_PAGER) && defined(MULTI_TRANSPORT_COMPANION)
   pagerLogInternalHeap("after UI init");
 #endif
 #endif
 
+  WADA_BISECT("pre-onBootComplete");
+#if defined(HELTEC_LORA_V4_ST7796)
+  Serial.printf("[STK] setup() end, free stack=%u bytes (max %u)\n",
+                (unsigned)uxTaskGetStackHighWaterMark(nullptr),
+                (unsigned)CONFIG_ARDUINO_LOOP_STACK_SIZE);
+  Serial.flush();
+#endif
   board.onBootComplete();
+  WADA_BISECT("post-onBootComplete-BOOT-COMPLETE");
 }
 
 void loop() {
