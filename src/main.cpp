@@ -927,9 +927,17 @@ static void wada_heap_report(const char *when) {
                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                 (unsigned)psram_bytes);
   if (psram_bytes) {
-    Serial.printf(" psram_free=%8u psram_largest=%8u",
-                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+    // MEASURED (coredump, task=loopTask): heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)
+    // PANICS on this build -- backtrace is wada_heap_report (this line) ->
+    // heap_caps_get_largest_free_block -> heap_caps_get_info -> multi_heap_get_info.
+    // The `psram_bytes` guard above does not help: it passes BECAUSE PSRAM is up, and
+    // that is exactly the case that faults. This diagnostic was itself the boot loop --
+    // reset reason came back ESP_RST_PANIC (4) every time, and it fired right after
+    // radio_init, which is why the real post-radio failure was never reached.
+    // heap_caps_get_free_size(MALLOC_CAP_SPIRAM) is safe, so keep that and drop the
+    // largest-block query. Reinstate once the underlying heap issue is fixed.
+    Serial.printf(" psram_free=%8u",
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
   } else {
     Serial.print(" (NO PSRAM -- MALLOC_CAP_SPIRAM allocations fall back to internal)");
   }
@@ -966,6 +974,32 @@ void setup() {
   wada_bc_name[0] = 0;
   wada_bc_free_stack = 0;
 #endif
+
+#if defined(HELTEC_LORA_V4_ST7796)
+  // BRING-UP DIAGNOSTIC: the previous boot's breadcrumb is normally reported much
+  // later, next to the [BOOT] lines -- but this build dies before it gets there,
+  // and the reboot is too fast to ever latch onto the USB CDC. So report it HERE,
+  // repeatedly, for 25s, while the chip is guaranteed to be alive and enumerated.
+  // That single window is enough to attach and read, no matter how fast the crash
+  // comes afterwards, and it names the stage the previous boot actually reached.
+  {
+    uint32_t t0 = millis();
+    Serial.println("\n===== PREVIOUS BOOT BREADCRUMB =====");
+    Serial.printf("  last stage : %s\n", wada_prev_name[0] ? wada_prev_name : "(none recorded)");
+    Serial.printf("  stage id   : %u\n", (unsigned)wada_prev_step);
+    Serial.printf("  free stack : %u bytes\n", (unsigned)wada_prev_free_stack);
+    Serial.println("==================================");
+    Serial.flush();
+    while ((millis() - t0) < 25000UL) {
+      delay(2000);
+      Serial.printf("[alive %4lus] prev=%s (step %u) stack=%u\n",
+                    (unsigned long)((millis()-t0)/1000),
+                    wada_prev_name[0] ? wada_prev_name : "(none)",
+                    (unsigned)wada_prev_step, (unsigned)wada_prev_free_stack);
+      Serial.flush();
+    }
+  }
+#endif
 #if defined(HAS_RAK_TAP_V2)
   delay(1500);  // USB-CDC enumeration before boot logs
 #else
@@ -980,6 +1014,11 @@ void setup() {
   // genuinely needs internal/DMA memory asks for it by capability and is
   // unaffected. Tunable — raise it if something misbehaves.
   heap_caps_malloc_extmem_enable(256);
+  // MEASURED on this board: PSRAM is healthy -- 2 MB present, 2095103 bytes free at
+  // setup entry. The "PSRAM corrupts the heap" theory was wrong; the boot loop was
+  // an 8 KB loopTask stack overflow (see ARDUINO_LOOP_STACK_SIZE). The 256-byte
+  // extmem threshold is the project's real tuning and is restored.
+  Serial.println("[PSRAM] malloc extmem enabled (256B threshold)");
 
   // Widen the task-watchdog grace period. The ~5 s default trips during a legitimate-but-slow flash
   // burst — a SPIFFS garbage-collect, or a bulk save (DataStore issues ~12 flash ops per contact,
@@ -1298,27 +1337,23 @@ void setup() {
   wada_heap_report("before SPIFFS.begin");
 #endif
 #if defined(HELTEC_LORA_V4_ST7796)
-  // Stack headroom at the fault site, stored in retained memory rather than
-  // printed: a printf immediately before a panicking call does not reach the
-  // host. Reported on the next boot next to the [BC] breadcrumb.
-  wada_prev_free_stack = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);
-  WADA_BISECT("7b stack sampled");
-  // ONE-SHOT DIAGNOSTIC: skip the SPIFFS mount entirely.
-  //
-  // Confirmed backtrace: calloc() inside esp_spiffs_init -> tlsf_block_size_max
-  // -> LoadProhibited at vaddr 0x0000000F. A full flash erase did not change it,
-  // so the free list SPIFFS walks is already corrupt before this call.
-  //
-  // Skipping the mount splits the two remaining possibilities in one boot:
-  //   A) boot continues to the UI  -> corruption is SPIFFS-path-specific
-  //   B) it faults at the next malloc -> corruption is global to the heap, and
-  //      nothing in the SPIFFS path is worth fixing
-  //
-  // The project already treats SPIFFS as best-effort (spiffs_ok is checked and
-  // the store falls back), so skipping it is a supported shape, not a hack.
-  Serial.println("[SPIFFSTEST] SKIPPING SPIFFS.begin() - diagnostic");
+  // The stack, not SPIFFS, was the fault. MEASURED: loopTask runs with an 8 KB
+  // stack (free stack 0 of 8192 by the store/sensor stage), and esp_spiffs_init
+  // -- which allocates and works on the caller's stack -- was overflowing it and
+  // faulting at vaddr 0x0000000F. The "skip SPIFFS" diagnostic that lived here
+  // treated that symptom, and instead produced a boot full of
+  // "File system is not mounted" errors with storage unusable. The real fix is
+  // ARDUINO_LOOP_STACK_SIZE (see the env), so mount normally again.
+  bool spiffs_ok = SPIFFS.begin(false);   // try first WITHOUT auto-format
+  if (spiffs_ok) {
+    Serial.printf("[SPIFFS] mounted OK total=%u used=%u\n",
+                  (unsigned)SPIFFS.totalBytes(), (unsigned)SPIFFS.usedBytes());
+  } else {
+    // MEASURED suspect: DataStore is constructed with &SPIFFS regardless, and
+    // loadPrefs -> openRead then faults inside the VFS on an unmounted volume.
+    Serial.println("[SPIFFS] MOUNT FAILED - store will fault in DataStore::openRead");
+  }
   Serial.flush();
-  bool spiffs_ok = false;
 #else
   bool spiffs_ok = SPIFFS.begin(false);   // try first WITHOUT auto-format
 #endif
@@ -1702,7 +1737,18 @@ void setup() {
   // that can afford a multi-second blocking format (before the Wi-Fi/event tasks
   // exist, or deferred to a UI-driven action with a progress notice), and to
   // confirm on hardware that a cold first-format boot survives.
+  #if !defined(HELTEC_LORA_V4_ST7796)
   if (!sd_storage && !spiffs_ok) SPIFFS.begin(true);   // last resort: format SPIFFS
+#else
+  // The one-shot diagnostic above skips the SPIFFS mount for this env on purpose
+  // (spiffs_ok is forced false), but this fallback then fired SPIFFS.begin(true)
+  // anyway -- so the skip was silently defeated and every boot died inside the very
+  // esp_spiffs_init path the diagnostic exists to avoid. MEASURED (coredump):
+  // setup() -> SPIFFSFS::begin -> esp_spiffs_init -> calloc -> tlsf_block_size_max
+  // -> LoadProhibited @ 0x0000000F, matching the signature recorded above.
+  // SPIFFS stays unmounted while this bisect is active; the project treats it as
+  // best-effort and the store falls back, per the note above.
+#endif
   WADA_BISECT("9 after spiffs format fallback");
   Serial.printf("[BOOT] storage: %s\n", sd_storage ? "SD /meshcomod" : "SPIFFS");
 #if defined(ESP32_PLATFORM) && defined(HAS_TOUCH_UI)
@@ -1819,10 +1865,24 @@ void setup() {
   serial_interface.begin(Serial, TCP_PORT, WS_PORT);
   Serial.println("[BOOT] serial_interface ok");
   serial_interface.setBroadcastResponses(true);  // RX log, channel messages, etc. go to all clients (USB + TCP + WS [+ BLE]), not only last sender
+  WADA_BISECT("a post-serial-iface");
   /* Wi-Fi and NimBLE coexist, but their first allocations are order-sensitive
    * on the Pager. Claim Wi-Fi's DMA/coexistence resources before starting BLE;
    * T-Deck does not reproduce this sequencing constraint. */
-  bool want_wifi = wifiConfigWantsWifi();
+  #ifndef WADA_NO_WIFI_BRINGUP
+#define WADA_NO_WIFI_BRINGUP 0
+#endif
+
+// BRING-UP (Waveshare V4-R2): Wi-Fi init is what kills this build. MEASURED by
+  // bisect: the last bread printed before the panic is "b want_wifi true", so the
+  // fault is inside this block -- WiFi.onEvent() push_back into the core's event
+  // std::vector, or WiFi.mode(WIFI_STA)'s esp_wifi_init. That is exactly the race
+  // the long comment above documents (core bug: the vector is reallocated by us
+  // while the core's _arduino_event_task walks it; a real dump exists from a V4-R8).
+  // BLE below is unaffected -- earlier logs reach "[boot] BLE co-init OK".
+  // The companion transport is not needed to verify display/touch/SD/LoRa/CardKB,
+  // so skip it here rather than chase a core race. See WADA_NO_WIFI_BRINGUP.
+  const bool want_wifi = wifiConfigWantsWifi() && !WADA_NO_WIFI_BRINGUP;
 #if defined(TLORA_PAGER)
   bool pager_wifi_ready_for_ble = false;
   const bool pager_want_ble = wifiConfigGetBleEnabled();
@@ -1834,6 +1894,7 @@ void setup() {
    * contiguous DMA block, so let it claim memory before BLE. (Association
    * happens later in loop(); this just inits the stack.) */
   if (want_wifi) {
+    WADA_BISECT("b want_wifi true");
     // Register every Wi-Fi event handler BEFORE the stack is started, never
     // after. WiFi.onEvent() push_backs into a std::vector that the Arduino core
     // iterates from its own event task, with no lock on either side: a
@@ -1865,6 +1926,11 @@ void setup() {
         else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP)    wifi_needs_reconnect = false;
     });
     const bool wifi_mode_ready = WiFi.mode(WIFI_STA);
+    WADA_BISECT("c after WiFi.mode STA");
+    Serial.printf("[BOOT] WiFi.mode(WIFI_STA) -> %d (heap free=%u maxblk=%u)\n", (int)wifi_mode_ready,
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    Serial.flush();
 #if defined(TLORA_PAGER)
     if (!wifi_mode_ready) {
       pagerWifiEnterBleFallback("boot STA initialization failed");
@@ -1980,6 +2046,7 @@ void setup() {
     if (!want_wifi || (freeh >= BLE_COEXIST_MIN_FREE && maxblk >= BLE_COEXIST_MIN_BLOCK)) {
       serial_interface.beginBle(BLE_NAME_PREFIX, the_mesh.getNodePrefs()->node_name, the_mesh.getBLEPin());
       Serial.printf("[boot] BLE co-init OK (wifi=%d free=%u maxblk=%u)\n", (int)want_wifi, (unsigned)freeh, (unsigned)maxblk);
+    WADA_BISECT("d after BLE co-init");
     } else {
       Serial.printf("[boot] BLE deferred: low heap (free=%u maxblk=%u) — Wi-Fi only\n", (unsigned)freeh, (unsigned)maxblk);
     }

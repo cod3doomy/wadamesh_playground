@@ -29,6 +29,17 @@ void HeltecV4Board::begin() {
     Serial.printf("[R8] FEM type=%d (0=GC1109 1=KCT8103L 2=other)\n", (int)loRaFEMControl.getFEMType());
 #endif
 
+#if defined(HELTEC_LORA_V4_ST7796) && defined(PIN_SD_CS)
+    // Same discipline for the Waveshare 3.5" panel's TF slot. That slot is wired
+    // to the SAME MOSI/SCLK/MISO nets as the ST7796 and differs only by chip
+    // select (TF-07F CD/DAT3 -> SD_CS), so an unconfigured GPIO17 floats while
+    // the display is already driving SPI3. Park it HIGH first.
+    pinMode(PIN_SD_CS, OUTPUT);
+    digitalWrite(PIN_SD_CS, HIGH);
+    Serial.printf("[V4] Waveshare SD_CS=%d parked HIGH (shares SPI3 with ST7796)\n",
+                  (int)PIN_SD_CS);
+#endif
+
     periph_power.begin();
     esp_reset_reason_t reason = esp_reset_reason();
     if (reason == ESP_RST_DEEPSLEEP) {

@@ -71,7 +71,7 @@ bool St7796WaveshareDisplay::begin() {
                     display.readcommand8(0x0C), display.readcommand8(0x0D));
     #endif
 
-    display.setRotation(DISPLAY_ROTATION);
+    setDisplayRotation(DISPLAY_ROTATION);
     setLogicalSize((int)(display.width() / DISPLAY_SCALE_X), (int)(display.height() / DISPLAY_SCALE_Y));
     display.setAttribute(CP437_SWITCH, true);
     display.fillScreen(TFT_BLACK);
@@ -181,14 +181,28 @@ void St7796WaveshareDisplay::writePixelsRGB565(int x, int y, int w, int h, const
 void St7796WaveshareDisplay::endFrame() { /* no-op: pushColors' own endWrite() already closed the SPI transaction */ }
 
 void St7796WaveshareDisplay::setDisplayRotation(uint8_t r) {
-  // MEASURED: with TFT_WIDTH=480 / TFT_HEIGHT=320 (the landscape orientation this
-  // build runs), MADCTL rotations 0 and 2 are the 480x320-landscape ones and 1/3
-  // flip to 320x480. The V4 UI's portrait/landscape preference calls this with
-  // 0/1/2/3, so on this panel that preference currently acts as a 180-degree
-  // flip rather than an orientation change -- expected for a first bring-up
-  // env; it does not affect the driver itself.
-  display.setRotation(r);
-  setLogicalSize((int)(display.width() / DISPLAY_SCALE_X), (int)(display.height() / DISPLAY_SCALE_Y));
+  // MEASURED on this panel, 2026-10-14, by driving MADCTL directly and reading it
+  // back over MISO. The correct landscape value is 0x20 (MV only):
+  //
+  //   0x20 MY|MV        Y correct, X mirrored
+  //   0xA0 MY|MX|MV     180 degrees out (upside down AND backwards)
+  //   0x60 MX|MV        180 degrees out the other way
+  //
+  // DO NOT REPLACE THIS WITH display.setRotation(r). That is the obviously-correct
+  // API and it is WRONG on this panel: setRotation(2) writes MADCTL=0xE0 and,
+  // worse, truncates the address window so only 320 of the 480 columns are ever
+  // written -- the UI renders correctly across two thirds of the screen and the
+  // remaining third shows stale GRAM garbage. A raw MADCTL write gives the full
+  // 480x320. This is why a raw register write beats the library call here.
+  //
+  // The rotation argument is intentionally ignored: MADCTL 0x20 is the only value
+  // that gives this panel its true landscape orientation, and the V4 UI's
+  // portrait/landscape preference calls this with 0..3, which previously acted as
+  // a 180-degree flip rather than an orientation change.
+  (void)r;
+  display.writecommand(TFT_MADCTL);
+  display.writedata(0x20);
+  setLogicalSize((int)(TFT_WIDTH / DISPLAY_SCALE_X), (int)(TFT_HEIGHT / DISPLAY_SCALE_Y));
 }
 
 void St7796WaveshareDisplay::setBrightness(uint8_t pct) {
