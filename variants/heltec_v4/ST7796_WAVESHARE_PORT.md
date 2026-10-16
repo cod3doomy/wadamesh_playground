@@ -3,10 +3,9 @@
 **Status: WORKING.** Display, touch, radio RX and CardKB verified on real hardware
 (2026-10-16). Touch is now enabled and verified; SD remains the only disabled item.
 Two caveats are carried as open items and **neither contradicts this status**:
-`ARDUINO_USB_MODE=1` is still set (bring-up-only, and the reason the CDC diagnostic
-channel works at all), and the Wi-Fi/BLE PHY double-init warning is unresolved with
-Wi-Fi/BLE itself disabled. Companion-*web* reachability is **not** among the verified
-items.
+Wi-Fi/BLE PHY double-init warning is unresolved with Wi-Fi/BLE itself disabled, and
+companion-*web* reachability is **not** among the verified items. `ARDUINO_USB_MODE=1`
+is a deliberate permanent setting, not an outstanding item - see open item 8.
 Panel identity confirmed as Waveshare SKU **29318**, `3.5inch Capacitive Touch LCD`
 (ST7796S + FT6336U + TF slot). Items still requiring hardware are marked **[HW]**.
 
@@ -191,13 +190,13 @@ whole `WADA_*` namespace was deleted — see root cause #1.)
 - **Flashing requires manual download mode** once the board is stable: hold **BOOT** -> tap **RESET** -> release **BOOT**, then `pio run -e <env> -t upload --upload-port <COM>`, then tap **RESET** to run. PlatformIO's "Hard resetting via RTS pin" leaves the ESP32-S3 in ROM download mode (`boot:0x20`) and never starts the app.
 - `pio` is **not on PATH**; it lives at `%USERPROFILE%\.platformio\penv\Scripts\pio.exe` (now added to the user PATH).
 - `Win32_SerialPort` goes stale and omits the native-USB COM port -- use `GetPnpDevice` instead.
-- TinyUSB (`ARDUINO_USB_MODE=0`) enumerated as `PID_0002` and delivered **no CDC bytes** on this host, making the boot log invisible. `ARDUINO_USB_MODE=1` (`PID_1001`) reads reliably. **BRING-UP ONLY -- revert before shipping.**
-- The 25-second `[alive ...]` window at `setup()` entry is bring-up scaffolding and adds 25 s to every boot. Remove it.
-
-## Why this shape
-
-The panel is the *third* display this board has driven, and the repo already contains
-most of what is needed:
+- `ARDUINO_USB_MODE=1` is a **deliberate permanent** setting for this env, not
+  scaffolding. TinyUSB (`=0`, the board JSON default) enumerated as `PID_0002` and the
+  boot log was not readable, making every fault blind; `=1` gives `PID_1001` "USB JTAG/
+  serial debug unit" and reads reliably. **Do not revert.** Caveat: the mode-0 finding
+  came from an async capture known to drop bytes, so it is suggestive rather than
+  proven; prior TinyUSB trouble on this host is the stronger reason. See the fuller
+  note in `platformio.ini`.
 
 | Item | Existing state |
 |---|---|
@@ -660,10 +659,11 @@ Steps:
    which is `PIN_GPS_TX`. **[HW]**
 7. **TXS0108E contention** - designed around by the split-bus decision; revisit only if
    the split bus proves impractical.
-8. **`ARDUINO_USB_MODE=1` is still set and marked bring-up-only** - reverting drops
-   TinyUSB `PID_0002` and with it CDC serial, which is the only diagnostic channel used
-   throughout this bring-up. Decide before the port is called finished. This is a
-   shipping-hygiene decision, **not** a display/touch/radio defect.
+8. **`ARDUINO_USB_MODE=1` is set deliberately and is staying** - this was open while it
+   was marked bring-up-only; the user has since decided to keep hardware CDC (`PID_1001`)
+   rather than revert to TinyUSB, having hit problems with it before on this host. Serial
+   was the only diagnostic channel for this whole port, so losing it to gain config
+   parity with the board JSON is not worth it. **No action needed.**
 9. **Wi-Fi/BLE PHY double-init** - `addApbChangeCallback(): duplicate func` appears
    whenever Wi-Fi/BLE is enabled. Unresolved; Wi-Fi/BLE is currently disabled. Also a
    hygiene item, **not** a contradiction of the WORKING status: the verified paths are
