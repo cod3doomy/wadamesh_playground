@@ -12,7 +12,7 @@
 //
 // Protocol reference: LovyanGFX Touch_FT5x06.cpp (FreeBSD license)
 
-#if defined(HAS_RAK_TAP_V2) && defined(ESP32)
+#if (defined(HAS_RAK_TAP_V2) || defined(HELTEC_LORA_V4_ST7796)) && defined(ESP32)
 
 #include "HeltecV4CapTouch.h"
 #include <Arduino.h>
@@ -32,17 +32,29 @@
 #endif
 
 // Output (landscape LVGL) screen dimensions — used for clamping after rotation.
+#if defined(HELTEC_LORA_V4_ST7796)
+// Waveshare 3.5" ST7796S: raw portrait is 320x480 and the rotated landscape output is
+// 480x320. The defaults in the #else are the RAK WisMesh Tap V2 240x320 panel; clamping a
+// 320x480 panel into a 320x240 box is what put every touch in the wrong place (MEASURED:
+// tapping left registered right, and taps across the top half landed identically).
+static const int SCR_W = 480;
+static const int SCR_H = 320;
+#else
 static const int SCR_W = 320;
 static const int SCR_H = 240;
+#endif
 
-// FT5x06 native report resolution — the chip sees the physical 240×320
-// panel BEFORE any ST7789 display rotation. Rotation formulas use these
-// raw-portrait dimensions; after the transform, the result is clamped to
-// the landscape output above. Mirrors HeltecV4CapTouch applyPointRotation
-// which uses W=240/H=320 as the pre-rotation baseline.
+// FT5x06 native report resolution — the chip sees the physical panel BEFORE any display
+// rotation. Rotation formulas use these raw-portrait dimensions; after the transform the
+// result is clamped to the landscape output above. Mirrors HeltecV4CapTouch's
+// applyPointRotation, which uses W=240/H=320 as its pre-rotation baseline.
+#if defined(HELTEC_LORA_V4_ST7796)
+static const int RAW_W = 320;
+static const int RAW_H = 480;
+#else
 static const int RAW_W = 240;
 static const int RAW_H = 320;
-
+#endif
 static const uint8_t FT5x06_ADDR          = 0x38;
 static const uint8_t FT5x06_REG_DEVMODE   = 0x00;
 static const uint8_t FT5x06_REG_TDSTATUS  = 0x02;

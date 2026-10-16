@@ -19,7 +19,7 @@
 // reports "no touch". The UI and the CardKB work; touch is a follow-up.
 #include <helpers/input/HeltecV4CapTouch.h>   // QUOTED form above is resolved against variants/
 
-#if defined(HELTEC_LORA_V4_ST7796) && defined(ESP32)
+#if defined(HELTEC_LORA_V4_ST7796) && defined(ESP32) && !defined(ST7796_TOUCH_FT5X06)
 
 #include <Arduino.h>
 #include <helpers/ui/MomentaryButton.h>   // BUTTON_EVENT_NONE

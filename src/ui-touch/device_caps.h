@@ -133,7 +133,15 @@
   // link (src/helpers/input/TDeckTouch.cpp) unconditionally re-routes Wire to
   // its own pins at begin(), which would take the CardKB's keyboard away.
   // This env excludes TDeckTouch.cpp for exactly that reason.
-  #define CAP_TOUCH        0
+    // FT5x06 driver (RakTapV2Touch.cpp). Was 0 during bring-up for two reasons, both now
+    // resolved: (a) no FT5x06 driver was linked -- it always was, just gated off; and
+    // (b) the only linkable driver (TDeckTouch) re-routed Wire onto its own pins, which
+    // would have taken the CardKB off the board bus. The CardKB now has its OWN bus on
+    // GPIO15/16, so the touch driver no longer needs exclusive use of Wire.
+    // The panel I2C pull-ups were ALSO referenced to VCC (GPIO38 idled at ~4.23 V against
+    // a 3.6 V absolute max); that is a hardware fix, made off-board, and the bus now
+    // measures 3.3 V idle.
+    #define CAP_TOUCH        1   // FT6336U at 0x38 on PIN_BOARD_SDA=38/SCL=4, driven by the
   #define CAP_ROTATABLE    0   // native 480x320 landscape (see St7796WaveshareDisplay.h)
   #define CAP_LARGE_SCREEN 0   // native 480x320, no upscaling
   #define CAP_SD           0   // SPIFFS only
