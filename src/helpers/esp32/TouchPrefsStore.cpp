@@ -59,12 +59,19 @@ static const uint32_t DEFAULT_ACCENT           = 0x15B6A6u;  // brand teal
 static const bool     DEFAULT_DC_SHOW          = true;
 static const uint8_t  DEFAULT_SIG_PROBE_EN     = 1;          // signal discover probe ON
 static const uint16_t DEFAULT_SIG_POLL_MIN     = 5;          // minutes between probes
-#if defined(HAS_CROWPANEL_35)
+#if defined(HELTEC_LORA_V4_ST7796)
+// 1, NOT 0. This selects ui_landscape, which picks the 480x320 landscape LVGL
+// surface in UITask. The panel is rotated in HARDWARE (begin() -> setRotation(1) ->
+// MADCTL 0x20) and LVGL is NOT software-rotated for this target, so LVGL renders
+// natively into the already-landscape GRAM. MEASURED: 0 here flips ui_landscape off
+// and the UI comes up portrait -- 90 degrees off AND occupying only part of the panel.
+static const uint8_t  DEFAULT_UI_ROTATION      = 1;          // landscape (LV_DISP_ROT_90) -- ALSO selects the 480x320 landscape LVGL surface below
+#elif defined(HAS_CROWPANEL_35)
 static const uint8_t  DEFAULT_UI_ROTATION      = 3;          // upright ILI9488 landscape
 #elif defined(HAS_CROWPANEL_50)
 static const uint8_t  DEFAULT_UI_ROTATION      = 3;          // native 800x480 landscape
 #elif defined(ATTAKY_MESH_SERIES)
-static const uint8_t  DEFAULT_UI_ROTATION      = 1;          // landscape (LV_DISP_ROT_90), as before it was a setting
+static const uint8_t  DEFAULT_UI_ROTATION      = 1;          // landscape (LV_DISP_ROT_90)
 #else
 static const uint8_t  DEFAULT_UI_ROTATION      = 0;
 #endif

@@ -24,7 +24,7 @@ the opposite reason: its glass is 222px inside a 320px GRAM."
 #endif
 
 #ifndef DISPLAY_ROTATION
-  #define DISPLAY_ROTATION 2   // see note in setDisplayRotation() below
+  #define DISPLAY_ROTATION 1   // r=1 == MADCTL 0x20, MEASURED correct on this panel
 #endif
 #ifndef DISPLAY_SCALE_X
   #define DISPLAY_SCALE_X 1.0f // native res == logical res; kept for shape-parity with ST7796LCDDisplay
@@ -74,7 +74,7 @@ bool St7796WaveshareDisplay::begin() {
     setDisplayRotation(DISPLAY_ROTATION);
     setLogicalSize((int)(display.width() / DISPLAY_SCALE_X), (int)(display.height() / DISPLAY_SCALE_Y));
     display.setAttribute(CP437_SWITCH, true);
-    display.fillScreen(TFT_BLACK);
+display.fillScreen(TFT_BLACK);
     display.setTextColor(TFT_WHITE);
     display.setTextSize((uint8_t)(2 * DISPLAY_SCALE_X));
 
@@ -125,7 +125,7 @@ void St7796WaveshareDisplay::panelSleep(bool sleep) {
 
 void St7796WaveshareDisplay::clear() { display.fillScreen(TFT_BLACK); }
 
-void St7796WaveshareDisplay::startFrame(ColorVal bkg) { (void)bkg; display.fillScreen(TFT_BLACK); }
+void St7796WaveshareDisplay::startFrame(ColorVal bkg) { display.fillScreen(bkg); }
 
 void St7796WaveshareDisplay::setTextSize(int sz) { display.setTextSize((uint8_t)(sz * DISPLAY_SCALE_X)); }
 
@@ -172,37 +172,39 @@ uint16_t St7796WaveshareDisplay::getTextWidth(const char* str) {
 
 void St7796WaveshareDisplay::writePixelsRGB565(int x, int y, int w, int h, const uint16_t* pixels) {
   if (!_isOn || !pixels || w <= 0 || h <= 0) return;
+  // startWrite()/endWrite() is the documented TFT_eSPI idiom and matches the WORKING
+  // T-LoRa Pager driver (src/helpers/ui/ST7796LCDDisplay.cpp). setAddrWindow() opens and
+  // closes its own transaction, but end_tft_write() no-ops while inTransaction is set, so
+  // the nesting is safe. Removing this wrapper did NOT fix the boot loop -- it was never
+  // the bug, and it is restored here for parity with the sibling driver that works.
   display.startWrite();
-  display.setAddrWindow(x, y, w, h);   // colstart/rowstart are 0 on this panel (see the CGRAM_OFFSET guard)
-  display.pushColors(const_cast<uint16_t*>(pixels), (uint32_t)(w * h));   // default swap=true matches LVGL's RGB565 buffers
+  display.setAddrWindow(x, y, w, h);   // colstart/rowstart are 0 on this panel
+  display.pushColors(const_cast<uint16_t*>(pixels), (uint32_t)(w * h));   // swap=true matches LVGL RGB565
   display.endWrite();
 }
 
 void St7796WaveshareDisplay::endFrame() { /* no-op: pushColors' own endWrite() already closed the SPI transaction */ }
 
 void St7796WaveshareDisplay::setDisplayRotation(uint8_t r) {
-  // MEASURED on this panel, 2026-10-14, by driving MADCTL directly and reading it
-  // back over MISO. The correct landscape value is 0x20 (MV only):
+  // MEASURED on this panel: the correct landscape orientation is MADCTL=0x20 (MV
+  // only). Of the four library rotations, r=1 selects exactly that.
   //
-  //   0x20 MY|MV        Y correct, X mirrored
-  //   0xA0 MY|MX|MV     180 degrees out (upside down AND backwards)
-  //   0x60 MX|MV        180 degrees out the other way
+  // THE EARLIER RAW-MADCTL HACK WAS THE BUG. The env declared TFT_WIDTH=480 /
+  // TFT_HEIGHT=320 -- LANDSCAPE dimensions for a natively 320x480 PORTRAIT panel --
+  // and then wrote MADCTL=0x20 by hand instead of calling setRotation(). That left
+  // TFT_eSPI's cached `rotation` member at 0 while the GRAM was genuinely in MV, so
+  // setWindow()'s `if (rotation & 0x01) transpose(x0, y0)` never transposed. The
+  // library's window arithmetic and the hardware's orientation disagreed, and that
+  // inconsistency is what corrupted the heap (TLSF abort in the first allocator to
+  // walk the damaged free list -- the crash victim moved between SPIFFS.begin and
+  // UITask::begin() as the allocation pattern changed).
   //
-  // DO NOT REPLACE THIS WITH display.setRotation(r). That is the obviously-correct
-  // API and it is WRONG on this panel: setRotation(2) writes MADCTL=0xE0 and,
-  // worse, truncates the address window so only 320 of the 480 columns are ever
-  // written -- the UI renders correctly across two thirds of the screen and the
-  // remaining third shows stale GRAM garbage. A raw MADCTL write gives the full
-  // 480x320. This is why a raw register write beats the library call here.
-  //
-  // The rotation argument is intentionally ignored: MADCTL 0x20 is the only value
-  // that gives this panel its true landscape orientation, and the V4 UI's
-  // portrait/landscape preference calls this with 0..3, which previously acted as
-  // a 180-degree flip rather than an orientation change.
-  (void)r;
-  display.writecommand(TFT_MADCTL);
-  display.writedata(0x20);
-  setLogicalSize((int)(TFT_WIDTH / DISPLAY_SCALE_X), (int)(TFT_HEIGHT / DISPLAY_SCALE_Y));
+  // The fix is not a cleverer raw register write -- it is to stop lying to the
+  // library. Declare the panel at its NATIVE 320x480 in the build flags and let
+  // TFT_eSPI own the rotation, so its cached state, the GRAM orientation and the
+  // address-window math all agree.
+  display.setRotation(r);
+  setLogicalSize((int)(display.width() / DISPLAY_SCALE_X), (int)(display.height() / DISPLAY_SCALE_Y));
 }
 
 void St7796WaveshareDisplay::setBrightness(uint8_t pct) {

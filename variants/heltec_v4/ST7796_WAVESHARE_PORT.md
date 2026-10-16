@@ -1,11 +1,17 @@
-# Heltec V4-R2 + Waveshare 3.5" capacitive-touch LCD — bring-up plan
+# Heltec V4-R2 + Waveshare 3.5" capacitive-touch LCD — bring-up findings
 
-**Status:** pre-work. All four research lanes complete; no hardware connected yet
-(`Win32_SerialPort` reports only `COM1`). Panel identity confirmed as Waveshare SKU
-**29318**, `3.5inch Capacitive Touch LCD` (ST7796S + FT6336U + TF slot).
-Items still requiring hardware are marked **[HW]**.
+**Status: WORKING.** Display, radio and companion link verified on real hardware
+(2026-10-15). Touch and SD remain disabled — see the open voltage issue below.
+Panel identity confirmed as Waveshare SKU **29318**, `3.5inch Capacitive Touch LCD`
+(ST7796S + FT6336U + TF slot). Items still requiring hardware are marked **[HW]**.
 
-**Target env: `heltec_v4_st7796_companion_radio_touch`** (`platformio.ini:253-476`).
+**Read the "Hardware bring-up findings" section before touching anything here.** The
+first two entries in this document — the "open heap corruption" blocker and the
+`WADA_*` bring-up scaffolding around Wi-Fi/BLE — are both **closed and were wrong**.
+The boot loop was never heap corruption; it was the panel reset line parked on the
+ESP32-S3's PSRAM chip-select. Re-deriving that will cost another day.
+
+**Target env: `heltec_v4_st7796_companion_radio_touch`** (`platformio.ini:253-557`).
 The stock `heltec_v4_tft_companion_radio_usb_tcp_touch` env is **out of scope**.
 
 ⚠️ **This config is R2-only.** On the V4-R8 (octal PSRAM) GPIOs 33–37 are consumed by
@@ -38,45 +44,103 @@ setx PLATFORMIO_CORE_DIR C:\pio
 The junction reuses the existing packages, so nothing re-downloads. Applies to newly
 launched shells only.
 
-## Hardware bring-up findings (2026-10-14, all MEASURED)
+## Hardware bring-up findings (2026-10-14/15, all MEASURED)
 
-### Closed
+### Root cause #1 — the boot loop: `TFT_RST=26` was the PSRAM chip-select
+
+**This was the whole thing.** The original diagnosis in this document was "heap
+corruption in TLSF, victim moves between runs". That was wrong, and it sent the
+bring-up down several dead ends (`WADA_NO_WIFI_BRINGUP`, `WADA_NO_BLE_BRINGUP`,
+`WADA_RXLOG_NO_PSRAM`, `WADA_DISP_NO_PUSH`, `WADA_REBOOT_DIAG` — all now removed).
+
+On the ESP32-S3 in the Heltec V4-R2, **GPIO26 is the PSRAM chip-select**. The SDK's
+`sdkconfig` for this target has `CONFIG_SPIRAM_CS_IO=26`. Our pin budget had parked
+the panel reset on 26, and TFT_eSPI's `init()` does:
+
+```cpp
+pinMode(26, OUTPUT);      // detaches the pad from SPICS in the GPIO matrix
+digitalWrite(26, 0);      // ...and holds CE# low
+delay(20);                // ...for 20 ms
+```
+
+Once `pinMode` runs, the pad leaves the SPI peripheral's view of the world — the
+matrix swap that made it SPICS is gone, and nothing else drives it. For 20 ms PSRAM
+had **no chip-select at all** and could not frame its own accesses. It is not a
+transient scribble on a scratch buffer: PSRAM's free-list metadata lives *in* PSRAM,
+so it was being corrupted on every boot, hard.
+
+This is why **the crash victim appeared to move between runs**. Whichever allocation
+next walked the free list died — `DataStore::begin()` → `VFSFileImpl` → `setvbuf` →
+`malloc` this time, `MyMesh::begin()` → `loadPrefsInt` the next. A moving victim is the
+signature of corrupted metadata, not of a specific buffer overflow, and it is exactly
+what the "classic heap-corruption" note in `main.cpp` describes. It is also why the
+`WADA_*` toggles appeared to *move* the crash: they changed allocation order, not
+heap health.
+
+⇒ **Fix: `TFT_RST=3`** (`PIN_TFT_RST=3` in the env), a free pin on this build.
+
+**The evidence that killed the heap-corruption theory** — TFT_eSPI's ESP32-S3 pixel
+path (`pushColors` → `pushPixels`) writes *only* to the SPI peripheral's 16-word
+hardware FIFO via `WRITE_PERI_REG`. No `_buf`, no `malloc`, no DMA, no buffer of any
+kind to overrun. There was no overflow to find.
+
+### Root cause #2 — garbled UI: SPI clock marginality over the dupont jumpers
+
+Distinct fault, different fix, same debugging session. MEASURED on the same board,
+over dupont jumper leads:
+
+| `SPI_FREQUENCY` | Result |
+|---|---|
+| 40 MHz | **Garbled** — 4 of the first boots after every flash erase |
+| 20 MHz | **Clean 8/8** from a freshly erased flash, animated background enabled |
+| 8 MHz | Clean 8/8 |
+
+`SPI_FREQUENCY=20000000` is the current value. The key evidence that this is *timing*
+and not memory state: **seven consecutive boots produced byte-identical
+`psram_free`, `nvs_free_entries` and LVGL configuration whether they rendered
+correctly or garbled.** Identical state, different output ⇒ the discriminator is on
+the wire, not in RAM.
+
+⇒ Very likely a **wiring** limit, not a chip limit. Short, hard-soldered display leads
+should permit considerably more. **Re-test the clock after rework** — do not treat
+20 MHz as a permanent ceiling.
+
+### Other findings
 
 | Area | Finding |
 |---|---|
 | **Build environment** | This repo cannot build when the Windows username contains a space: PlatformIO expands ~212 include flags under that home dir, SCons passes them unquoted, and every compile dies with `CreateProcess: No such file or directory`. The compiler itself is fine. Fixed with a `C:\pio` junction to `%USERPROFILE%\.platformio` plus `setx PLATFORMIO_CORE_DIR C:\pio`. Affects every PlatformIO project on the machine. |
-| **Flash headroom** | Measured **4,057,597 / 6,160,384 = 65.9%**, ~2.0 MB free. The `99.7%` claim at `platformio.ini:259-262` is **stale** (written before `partitions_st7796.csv` widened the app slots). Risk voided. |
-| **Pin map** | Verified by I2C scan: FT6336U **ACK 0x38** on GPIO38/4; CardKB **ACK 0x5F** on GPIO15/16 and answers `requestFrom`; backlight responds on GPIO6. All three devices wired correctly. |
-| **Panel power (SAFETY)** | The panel's I2C pull-ups are referenced to **VCC, not 3V3**. With VCC on 5 V this drove **GPIO38 to 4.23 V**, above the ESP32-S3's **3.6 V absolute max**. Fixed by powering **VCC from the 3.3 V rail**. The panel's `3V3` pin is a *regulated output* -- do **not** tie it to the V4's 3.3 V rail. Backlight brightness was unaffected. |
-| **Display geometry** | `setRotation(2)` -- the obviously-correct API -- writes `MADCTL=0xE0` **and truncates the address window to 320 of 480 columns**, so the UI renders over two thirds and the rest shows stale GRAM. A raw `MADCTL=0x20` (MV only) gives full 480x320 with correct orientation. Now in `St7796WaveshareDisplay::setDisplayRotation()` with a comment explaining why the library call is wrong here. |
-| **GPIO38 collision** | `PIN_GPS_RX=38` and `PIN_BOARD_SDA=38` claim the same pad. `EnvironmentSensorManager::begin()` calls `initBasicGPS()` first and takes GPIO38. **GPS cannot coexist with the panel's touch bus on this board** -- mutually exclusive, not a bring-up-only setting. |
-| **CardKB bus** | The repo comment claiming the CardKB "never ACKs a bare address probe" is **false** -- it ACKs. `requestFrom` is still correct and is kept. |
+| **Flash headroom** | Measured **3,960,985 / 6,160,384 = 64.3%** of flash, ~2.1 MB free. The old `99.7%` claim at `platformio.ini:259-262` was **stale** (written before `partitions_st7796.csv` widened the app slots). Corrected. |
+| **`TFT_MISO=-1`** | This is a **4-wire** panel — write-only, no MISO line brought out. A register readback returning `COLMOD=0xFF` is the tell: reads fail closed, so any "SPI readback" evidence collected through MISO on this build is meaningless. Leave `TFT_MISO=-1`. |
+| **Display geometry** | Declare the panel at its **NATIVE `TFT_WIDTH=320` / `TFT_HEIGHT=480`** and call **`setRotation(1)`**. Declaring it landscape and hand-writing MADCTL is wrong: TFT_eSPI caches its rotation state and desynchronises from the register, so the address window, the driver's assumed dimensions and the hardware all disagree. `setRotation()` keeps the cache and the register in step. |
+| **UI rotation pinning** | `s_ui_rotation` must be pinned to **`LV_DISP_ROT_90`** in `UITask.cpp`. It is a **persisted pref** that *overrides* `DEFAULT_UI_ROTATION`, and `device_caps.h` sets `CAP_ROTATABLE 0` for this target, so the UI offers no way to change it back. An unpinned value therefore sticks forever. |
+| **Pin map** | Verified by I2C scan: CardKB **ACK 0x5F** on GPIO15/16 and answers `requestFrom`; backlight responds on GPIO6. Panel touch bus is **0x38** on GPIO38/4 but is currently unused — see the voltage issue. |
+| **CardKB bus** | Needs its **own I2C peripheral on GPIO15/16**, not a second `TwoWire` alias onto the board bus. Beyond the TXS0108E contention argument already recorded below: **polling the panel's touch line for an absent device wedged SCL and stalled the UI for 525 ms every second.** An isolated bus cannot do that. |
+| **GPIO38 collision** | `PIN_GPS_RX=38` and `PIN_BOARD_SDA=38` claim the same pad. `EnvironmentSensorManager::begin()` calls `initBasicGPS()` first and takes GPIO38. **GPS cannot coexist with the panel's touch bus on this board** — mutually exclusive, not a bring-up-only setting. |
+| **CardKB ACKing** | The repo comment claiming the CardKB "never ACKs a bare address probe" is **false** — it ACKs. `requestFrom` is still correct and is kept. |
 
-### Open -- heap corruption (the real blocker)
+### STILL OPEN — the panel I2C pull-ups overvoltage
 
-The firmware does not reach the UI. It panics in the **TLSF heap allocator itself**:
+**Unresolved, and it is why touch and SD are disabled.** The panel's I2C pull-ups are
+referenced to **VCC, not 3V3**. With VCC on 5 V this drove **GPIO38 to 4.23 V**,
+against the ESP32-S3's **3.6 V absolute maximum**. ESP32-S3 GPIOs are not 5V-tolerant.
 
-```
-MyMesh::begin()  ->  DataStore::loadPrefsInt  ->  DataStore::begin()
-  -> DataStore::openRead  ->  File::openNextFile  ->  VFSImpl::open
-    -> VFSFileImpl::VFSFileImpl  ->  setvbuf  ->  malloc
-      -> multi_heap_realloc  ->  search_suitable_block  ->  block_prev   [FAULT]
-```
+⇒ Both `CAP_TOUCH=0` and `CAP_SD=0` in `src/ui-touch/device_caps.h` are deliberate
+and must stay until the bus is fixed. The touch controller *is* present and *does*
+ACK at `0x38` — it is disabled purely on voltage grounds.
 
-`block_prev` walking a corrupted free list means **heap metadata is corrupt**, and the faulting allocation is incidental -- it is whatever `malloc` happened to be serving. This matches the pre-existing note in `main.cpp`: *"calloc() inside esp_spiffs_init -> tlsf_block_size_max -> LoadProhibited at vaddr 0x0000000F. A full flash erase did not change it."*
-
-**Ruled out by measurement:** PSRAM (2 MB present, 2095103 free), SPIFFS (mounts cleanly), the display driver, the sensor drivers, Wi-Fi/BLE ordering (the crash *moves* when those are toggled -- the classic heap-corruption signature), and a full flash erase.
-
-**Next step:** find the buffer overflow that corrupts the free list. Audit the paths running between `[BOOT] mesh ok` and the first prefs read -- notably the LVGL/UI allocation paths and `SdNvsPrefs`, a file-backed `Preferences` implementation with its own A/B snapshot buffers. AddressSanitizer, or a heap canary sampled immediately before `loadPrefs`, would localise it far faster than more coredump reading.
+**Before re-enabling either:** level-shift the bus, or re-terminate the pull-ups to
+3V3. Re-measure GPIO38 at idle *with the bus loaded* before assuming it is fixed.
+The panel's `3V3` pin is a *regulated output* — do **not** tie it to the V4's 3.3 V rail.
 
 ### Firmware bugs found and fixed on the way
 
-1. `main.cpp:932` -- `heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)` **panics when PSRAM is present**; its own `if (psram_bytes)` guard passes precisely in the failing case.
-2. `main.cpp:1713` -- the "last resort format" fallback **defeated the SPIFFS-skip diagnostic**, so every boot died in the `esp_spiffs_init` path the diagnostic existed to avoid.
+1. `main.cpp:932` — `heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)` **panics when PSRAM is present**; its own `if (psram_bytes)` guard passes precisely in the failing case.
+2. `main.cpp:1713` — the "last resort format" fallback **defeated the SPIFFS-skip diagnostic**, so every boot died in the `esp_spiffs_init` path the diagnostic existed to avoid.
 3. `GPIO17` (`PIN_SD_CS`) was **unconfigured and floating** while the display drove SPI3; now parked HIGH before display init.
 4. Fourteen `ENV_INCLUDE_*` sensor drivers compiled against a bus holding **exactly one device**.
-5. **`loopTask`'s default 8 KB stack was exhausted** (free stack 0 of 8192) -- the true root cause of the original boot loop. `esp_spiffs_init` was overflowing it, which read like a SPIFFS bug and survived a flash erase because it is RAM. Fixed with `ARDUINO_LOOP_STACK_SIZE=16384`; **this is probably not Waveshare-specific**, since other boards run the same heavy `setup()` on 8 KB.
-6. `WiFi.onEvent()` / `WiFi.mode(WIFI_STA)` panics this build -- the Arduino core's WiFi event-vector race, already documented in-repo with a V4-R8 dump. Worked around with `WADA_NO_WIFI_BRINGUP=1`.
+5. **`loopTask`'s default 8 KB stack was exhausted** (free stack 0 of 8192). Fixed with `ARDUINO_LOOP_STACK_SIZE=16384`. **This is a real bug and worth keeping — but it was NOT the boot loop.** `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY` is off on this target, so that stack could never reach the corrupted PSRAM and could not have been the victim. **This is probably not Waveshare-specific** either: other boards run the same heavy `setup()` on 8 KB.
+6. The Arduino-core Wi-Fi event-vector race (`WiFi.onEvent()` / `WiFi.mode(WIFI_STA)` push_back vs. `_arduino_event_task` walk) is a genuine core bug with a V4-R8 dump in-repo — but it was **not** what was crashing this build. Both transports run normally now; the `WADA_*` gates that suppressed them are gone.
 
 ### Bring-up workflow notes
 
@@ -113,6 +177,11 @@ the CardKB gets a bus to itself. Touch stays at 100 kHz on the board bus with th
 sensors — that costs the touch controller its optional 400 kHz headroom, which the UI
 does not need at this poll rate.
 
+**MEASURED afterwards, and decisive:** polling the panel's touch line for a device that
+is not there **wedged SCL and stalled the UI for 525 ms every second**. Not a marginal
+NACK — a hard stall on the shared bus. The split bus is what keeps the CardKB pollable
+while the touch bus is unusable.
+
 **2. Vext must be asserted, and the header 3V3 is a switched rail.** On the Heltec V4
 the header `Ve` pins are switched Vext, not a straight LDO. The panel draws ~63 mA plus
 backlight — feeding it from a switched rail browns out unless firmware enables Vext.
@@ -137,15 +206,15 @@ backlight — feeding it from a switched rail browns out unless firmware enables
 | 2 | 3V3 | **3V3** | **mandatory** — powers FT6336U + its pull-ups |
 | 3 | GND | **GND** | |
 | 5 | MOSI | **48** | SPI3 |
-| 6 | SCLK | **47** | SPI3, 40 MHz MEASURED |
-| 4 | MISO | **18** | SPI3 MISO — SD read requires it |
+| 6 | SCLK | **47** | SPI3, **20 MHz** MEASURED |
+| 4 | MISO | *not brought out* | **4-wire panel — write-only.** `TFT_MISO=-1` |
 | 8 | LCD_CS | **33** | R2 only (see warning above) |
 | 9 | LCD_DC | **21** | Heltec `OLED RST` — harmless, no OLED fitted |
-| 10 | LCD_RST | **26** | |
+| 10 | LCD_RST | **3** | ⚠️ **NOT 26.** 26 is the PSRAM chip-select — see root cause #1 |
 | 11 | LCD_BL | **6** | active-high PWM, MEASURED |
 | 7 | SD_CS | **17** | new |
-| 12 | TP_SDA | **38** | I2C1, touch only |
-| 13 | TP_SCL | **4** | I2C1, touch only |
+| 12 | TP_SDA | **38** | I2C1, touch only — ⚠️ overvoltage, see below |
+| 13 | TP_SCL | **4** | I2C1, touch only — ⚠️ overvoltage, see below |
 | 14 | TP_INT | *unconnected* | driver polls |
 | 15 | TP_RST | *unconnected* | power-on reset |
 
@@ -153,9 +222,13 @@ backlight — feeding it from a switched rail browns out unless firmware enables
 `variants/heltec_v4/pins_arduino.h:60-61`. ⇒ Safe to reuse, and GPIO21 working as
 `LCD_DC` independently proves no OLED is fitted.
 
-**MISO was not in the original budget.** `TFT_MISO=-1` because the LCD is write-only,
-but `SD.begin()` reads the CSD. The panel exposes MISO on pin 4 ⇒ SPI3 needs a real
-MISO pin.
+**MISO does not exist on this panel.** The original budget assumed pin 4 would let
+`SD.begin()` read the CSD. It does not — the module is a 4-wire write-only display.
+⇒ `TFT_MISO=-1` is correct and there is no MISO pin to wire. The tell was a register
+readback returning `COLMOD=0xFF`: reads fail closed rather than returning garbage, so
+an earlier "SPI readback confirms…" conclusion drawn through MISO was unfounded.
+This has a knock-on for Phase 3: **SD cannot be brought up without MISO**, which is
+one more reason `CAP_SD=0` is not yet a decision anyone should revisit casually.
 
 ### 0.2 CardKB — separate bus, and the pull-up decision **[HW]**
 
@@ -249,10 +322,10 @@ address `0x38`, already implementing the full 13-function `HeltecV4CapTouch` con
    ST7796 has no rotation register — so this is 100% host-side math and is the one
    genuinely novel code in the project. `RAK_TS_FLIP_X`/`RAK_TS_FLIP_Y` do not carry over.
 3. **Point at the board bus** — SDA=38 / SCL=4 on **I2C0 (`Wire`)**, alongside the
-   environment sensors. All of these are 100 kHz devices, so there is no clock compromise,
-   and the panel's TXS0108E pull-ups go to 3V3 so there is no voltage fight either. The
-   CardKB is deliberately *not* on this bus. The driver already uses `Wire`, so this step is
-   smaller than it looks — but do **not** let it re-route `Wire`, or the sensors drop off.
+   environment sensors. ⚠️ **This phase is on HOLD, not done.** The panel's I2C pull-ups
+   are referenced to VCC and drive GPIO38 to ~4.23 V against a 3.6 V absolute maximum.
+   See "STILL OPEN" above. The driver already uses `Wire`, so wiring it up later is
+   small — but do **not** let it re-route `Wire`, or the sensors drop off.
 4. **Init timing — the chip NACKs for ~300 ms after reset** (`Trsi`, datasheet Table 3-5).
    The current 3-attempt retry (`RakTapV2Touch.cpp:110-115`) is not enough on a cold
    boot. Use the Waveshare sequence: 200 ms low, then ≥300 ms before first I²C. Do **not**
@@ -271,17 +344,18 @@ address `0x38`, already implementing the full 13-function `HeltecV4CapTouch` con
    data, not that a transaction is safe on a shared bus — and we no longer share it, so
    there is no reason to use INT at all.
 10. **Flip the capability:** `CAP_TOUCH` 0→1 at `src/ui-touch/device_caps.h:136`, and
-    retire the no-op `variants/heltec_v4/St7796NoTouch.cpp`.
+    retire the no-op `variants/heltec_v4/St7796NoTouch.cpp`. ⚠️ **NOT DONE, and it must
+    not be.** `CAP_TOUCH=0` is a deliberate voltage safety hold, not a leftover.
 11. **Flash budget — measured, and a non-issue.** A successful build reports
-    **4,057,597 of 6,160,384 bytes = 65.9%**, leaving ~2.0 MB. The app0 slot in
-    `partitions_st7796.csv` is `0x010000–0x5F0000` = 6,160,384 bytes, matching the
-    reported maximum exactly. RAM is 170,464 of 2,097,152 = 8.1%.
+    **3,960,985 of 6,160,384 bytes = 64.3%**, leaving ~2.1 MB. The app0 slot in
+    `partitions_st7796.csv` is `0x010000`–`0x5F0000` = 6,160,384 bytes, matching the
+    reported maximum exactly. RAM is 164,692 of 2,097,152 = 7.9%.
 
     ⚠️ The comment at `platformio.ini:259-262` claiming this env sits at **99.7%** and
-    "leaves no room for the FT6336U touch driver" is **stale** — almost certainly written
-    against the smaller app slots before `partitions_st7796.csv` widened them. Do not
-    pre-emptively trim `deploy/apps` or shrink `spiffs` on the strength of that comment.
-    Re-measure after this phase instead.
+    "leaves no room for the FT6336U touch driver" was **stale** — written against the
+    smaller app slots before `partitions_st7796.csv` widened them. It has since been
+    corrected to the measured 64.3%. Do not trim `deploy/apps` or shrink `spiffs` on
+    the strength of either figure.
 
 **Colour order note:** Waveshare's two official demos **disagree** — the ESP-IDF BSP
 forces BGR, the Arduino demo passes RGB. The repo's `TFT_RGB_ORDER=TFT_RGB` +
@@ -306,12 +380,15 @@ SPI peripheral. DAT1/DAT2 are unconnected, so **4-bit SDIO is physically impossi
 (`SD.begin(SD_CS, fspi)`). Do **not** use `SD_MMC` — that applies to the
 *ESP32-S3-Touch-LCD-3.5* board, not this module.
 
-1. Add `PIN_SD_CS=17` and enable SPI3 MISO=18 (currently `TFT_MISO=-1`).
-2. Set `CAP_SD=1` at `src/ui-touch/device_caps.h:139`.
+1. Add `PIN_SD_CS=17`. ⚠️ **There is no MISO to enable** — the panel is 4-wire
+   write-only, so `TFT_MISO=-1` stays and `SD.begin()` cannot read the CSD over this
+   bus. `CAP_SD=0` is currently blocked on that *and* on the GPIO38 overvoltage.
+2. Set `CAP_SD=1` at `src/ui-touch/device_caps.h:139`. ⚠️ Same voltage hold as touch.
 3. **Init order is a vendor requirement:** Waveshare's demo states *"SD card
    initialization must be placed after the LCD."* Mount SD only after the panel is up.
-4. **Drop the SD clock to ≤20 MHz.** The bus is 40 MHz MEASURED for the LCD, far too fast
-   for a card. Interleaving high-speed LCD DMA fills with card reads is the classic
+4. **Drop the SD clock to ≤20 MHz.** The bus is 20 MHz MEASURED for the LCD — already
+   capped by the dupont wiring, see root cause #2 — and far too fast for a card.
+   Interleaving high-speed LCD DMA fills with card reads is the classic
    failure here. `include/SdFastClock.h` exists as a precedent for *raising* it
    deliberately, so the inverse is safe.
 5. **Keep `LCD_CS` rigorously de-asserted between transactions.** If it idles low, the
@@ -386,17 +463,21 @@ Steps:
 
 ## Open items, in risk order
 
-1. **CardKB 5V pull-up over-voltage** — pick an option in 0.2 before wiring. **[HW]**
-2. **Vext not asserted / switched 3V3 rail** — brown-out risk in Phase 1. **[HW]**
-3. **Touch coordinate transform** — the only genuinely novel code; rotation 2 mapping
-   unproven **[HW]**.
-4. **SD/LCD shared SPI3 bus** — drop the SD clock and respect init order.
-5. **GPIO38 GNSS collision** — verify unpopulated **[HW]**.
+1. **Panel I2C overvoltage on GPIO38 (4.23 V vs 3.6 V abs max)** — blocks *both* touch
+   and SD. Needs level shifting or re-termination to 3V3. **This is the top blocker.**
+   **[HW]**
+2. **CardKB 5V pull-up over-voltage** — pick an option in 0.2 before wiring. **[HW]**
+3. **Re-test the SPI clock after wiring rework** — 20 MHz is measured-good on dupont
+   jumpers, not a proven ceiling. Short soldered leads should go higher. **[HW]**
+4. **SD is blocked on MISO, not just voltage** — the panel is 4-wire write-only, so
+   `SD.begin()` cannot read the CSD on SPI3 as wired. Revisit the topology. **[HW]**
+5. **GPIO38 GNSS collision** — verify the GNSS header is unpopulated. **[HW]**
 6. **TXS0108E contention** — designed around by the split-bus decision; revisit only if
    the split bus proves impractical.
 
-Closed: the flash budget. The 99.7% figure in `platformio.ini` is stale; measured is
-65.9% with ~2.0 MB free, so Phase 2 has ample room.
+Closed: the flash budget (measured 64.3%, ~2.1 MB free — the old 99.7% figure was
+stale and is now corrected in `platformio.ini`), and the boot loop itself (PSRAM CS on
+the panel reset line, see root cause #1).
 
 ## Explicitly unconfirmed
 

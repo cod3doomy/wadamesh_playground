@@ -71135,8 +71135,15 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   // in scarce internal DRAM that Wi-Fi DMA needs. Zero-init; the push/collect
   // helpers null-guard, so a (vanishingly unlikely) OOM just drops Monitor logs.
   if (!s_rxlog_ring)  s_rxlog_ring  = (char(*)[RXLOG_COLS])heap_caps_calloc(RXLOG_LINES, RXLOG_COLS, MALLOC_CAP_SPIRAM);
-  if (!s_rxlog_ring)  s_rxlog_ring  = (char(*)[RXLOG_COLS])heap_caps_calloc(RXLOG_LINES, RXLOG_COLS, MALLOC_CAP_8BIT);
   if (!s_rawlog_ring) s_rawlog_ring = (char(*)[RXLOG_COLS])heap_caps_calloc(RXLOG_LINES, RXLOG_COLS, MALLOC_CAP_SPIRAM);
+  // The MALLOC_CAP_SPIRAM calloc above ABORTS inside TLSF (exc_cause=28,
+  // vaddr=0x0f, via adjust_request_size -> tlsf_block_size_max) instead of
+  // returning NULL, so these internal-heap fallbacks below never get a chance to
+  // run. These are only 2x2.2 KB, so internal DRAM is ample and taking the rings
+  // from there instead is a one-line change if PSRAM ever looks unhealthy.
+  // (On the Waveshare V4-R2 the aborts that pointed here were NOT PSRAM damage --
+  // see variants/heltec_v4/ST7796_WAVESHARE_PORT.md, root cause #1.)
+  if (!s_rxlog_ring)  s_rxlog_ring  = (char(*)[RXLOG_COLS])heap_caps_calloc(RXLOG_LINES, RXLOG_COLS, MALLOC_CAP_8BIT);
   if (!s_rawlog_ring) s_rawlog_ring = (char(*)[RXLOG_COLS])heap_caps_calloc(RXLOG_LINES, RXLOG_COLS, MALLOC_CAP_8BIT);
 #if defined(ESP32)
   crashDumpCheck();   // detect a pending panic coredump (Settings → About shows an Export button)
@@ -71668,6 +71675,21 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
     // is the single point where orientation is established for the session.
 #if defined(ESP32)
     s_ui_rotation = touchPrefsGetUiRotation();
+#if defined(HELTEC_LORA_V4_ST7796)
+    // This panel has exactly ONE correct landscape orientation: panel rotation 1,
+    // MADCTL 0x20, which the boot path (main.cpp) already establishes before the logo.
+    // ui_rotation is a PERSISTED file pref that OVERRIDES DEFAULT_UI_ROTATION, and
+    // device_caps.h sets CAP_ROTATABLE 0 for this target, so Settings > Display >
+    // Orientation is not even built -- a stale 0 or 3 in the SPIFFS cfg blob wins
+    // silently and the user cannot undo it from the UI.
+    //   0 -> ui_landscape 0 -> LVGL renders 320x480 portrait into a 480x320 MV GRAM
+    //        = 90 degrees off AND occupying only part of the panel.
+    //   3 -> setDisplayRotation(3) -> MADCTL 0xE0, 180 degrees from the boot path.
+    // Pinned here, mirroring the V4-R8 guard immediately below. MEASURED: the splash
+    // (which shares this flush and this band verbatim) renders correct, so the panel,
+    // band and SPIFFS path are all fine and the only remaining variable is this value.
+    s_ui_rotation = LV_DISP_ROT_90;
+#endif
 #if defined(HELTEC_LORA_V4_R8)
     // V4-R8: force PORTRAIT at every boot. A tester who switched to landscape got stuck: the
     // shared cap-touch landscape transform was tuned on the V4's ST7789 driver, whose portrait
@@ -71853,19 +71875,25 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
 #elif defined(HAS_CROWPANEL_50)
     g_lv.disp_drv.hor_res  = s_remote_mode ? (s_remote_landscape ? 400 : 240) : (ui_landscape ? 800 : 480);
     g_lv.disp_drv.ver_res  = s_remote_mode ? (s_remote_landscape ? 240 : 400) : (ui_landscape ? 480 : 800);
+#elif defined(HELTEC_LORA_V4_ST7796)
+    // Waveshare 3.5" ST7796S. This panel is 480x320 NATIVE (it is a 320x480 portrait
+    // glass rotated in hardware: begin() -> setRotation(1) -> MADCTL 0x20), and LVGL
+    // is NOT software-rotated for this target (no lv_disp_set_rotation below), so
+    // LVGL renders straight into the already-landscape GRAM.
+    // MEASURED: the generic #else below hardcodes 320x240, which is the Heltec V4 TFT
+    // ST7789 -- on this panel that drew the UI into part of a 480x320 screen, and
+    // with ui_landscape off it came up portrait (90 degrees off AND undersized).
+    g_lv.disp_drv.hor_res  = s_remote_mode ? (s_remote_landscape ? 400 : 240) : (ui_landscape ? 480 : 320);
+    g_lv.disp_drv.ver_res  = s_remote_mode ? (s_remote_landscape ? 240 : 400) : (ui_landscape ? 320 : 480);
 #else
-    // Landscape rotates the panel in HARDWARE (smooth — no per-pixel software
+    // Landscape rotates the panel in HARDWARE (smooth - no per-pixel software
     // rotation each flush), so tell LVGL the already-rotated resolution and let
     // it render/flush natively in 320x240.
-    // Remote render = 480x288 (5:3): rendered SMALL on-device, upscaled to fill the browser
-    // window. Every streaming stage (LVGL rasterise, shadow memcpy, RLE encode, socket bytes)
-    // scales with pixel count, so fewer pixels = proportionally faster — ~44% less than
-    // 640x384. The browser bilinear-upscales the canvas (near-free on the GPU) at the cost of
-    // some softness. Orientation toggles live via the Rotate button ([0x04] + s_remote_landscape).
-    // 400x240 (was 480x288): keeps the whole mirror footprint (~514 KB) BELOW the VNC
-    // footprint that already allocates on the 2 MB-PSRAM Heltec V4 (~616 KB), so remote is
-    // guaranteed to fit anywhere VNC does instead of black-screening on a failed alloc. Also
-    // faster (fewer pixels). Upscaled in the browser.
+    // Remote render = 400x240: rendered SMALL on-device, upscaled to fill the browser
+    // window. Every streaming stage (LVGL rasterise, shadow memcpy, RLE encode, socket
+    // bytes) scales with pixel count, so fewer pixels = proportionally faster. The
+    // browser bilinear-upscales the canvas (near-free on the GPU) at the cost of some
+    // softness. Orientation toggles live via the Rotate button.
     g_lv.disp_drv.hor_res  = s_remote_mode ? (s_remote_landscape ? 400 : 240) : (ui_landscape ? 320 : 240);
     g_lv.disp_drv.ver_res  = s_remote_mode ? (s_remote_landscape ? 240 : 400) : (ui_landscape ? 240 : 320);
 #endif
@@ -71875,7 +71903,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
     // when the base orientation is portrait. In hardware landscape the LVGL
     // rotation is left at NONE so it never software-rotates on top of the panel.
     g_lv.disp_drv.sw_rotate = 1;
-  lv_disp_drv_register(&g_lv.disp_drv);
+    lv_disp_drv_register(&g_lv.disp_drv);
 #if defined(HAS_TANMATSU)
     // Apply the 270° software rotation now that the driver is registered: logical surface
     // becomes 800x480 and lv_disp_get_hor/ver_res report landscape for every layout query.

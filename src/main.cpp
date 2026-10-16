@@ -799,6 +799,23 @@ static void wioTrackerL2GpsProbe() {
 #endif  // HAS_WIO_TRACKER_L2 && WIO_TRACKER_L2_GPS_PROBE
 
 
+// Fallbacks so the WADA_* bring-up diagnostics below compile to nothing on every
+// other board. They used to live in an `#else` INSIDE the ST7796 gate, which was
+// itself inside another ST7796 gate -- dead code, so every non-ST7796 env failed
+// to build with "'WADA_BISECT' was not declared in this scope".
+#ifndef WADA_BISECT
+#define WADA_BISECT(n) do { } while (0)
+#endif
+#ifndef WADA_BC_REPORT
+#define WADA_BC_REPORT() do { } while (0)
+#endif
+#ifndef WADA_STK
+#define WADA_STK() do { } while (0)
+#endif
+#ifndef WADA_WDT_GRACE_SEC
+#define WADA_WDT_GRACE_SEC 20
+#endif
+
 #if defined(HELTEC_LORA_V4_ST7796)
 // TEMPORARY bring-up diagnostic -- retained-memory boot breadcrumbs.
 // Defined here, at file scope, because both the retained variables and the
@@ -990,14 +1007,13 @@ void setup() {
     Serial.printf("  free stack : %u bytes\n", (unsigned)wada_prev_free_stack);
     Serial.println("==================================");
     Serial.flush();
-    while ((millis() - t0) < 25000UL) {
-      delay(2000);
-      Serial.printf("[alive %4lus] prev=%s (step %u) stack=%u\n",
-                    (unsigned long)((millis()-t0)/1000),
-                    wada_prev_name[0] ? wada_prev_name : "(none)",
-                    (unsigned)wada_prev_step, (unsigned)wada_prev_free_stack);
-      Serial.flush();
-    }
+      // MEASURED: the original 25 s hold here was itself BREAKING the boot -- it
+      // pushed total setup() past the esp_task_wdt_init(20, true) grace, so the
+      // task watchdog fired (rst:0x8 TG1WDT_SYS_RST) before the heap checks could
+      // run past step 1. Print the breadcrumb once and move on; this build uses
+      // hardware CDC so the log is readable without holding the chip awake.
+      // Do NOT reintroduce a long hold here -- it fights the watchdog.
+      (void)t0;
   }
 #endif
 #if defined(HAS_RAK_TAP_V2)
@@ -1027,7 +1043,7 @@ void setup() {
   // CPU1=IDLE1, core 0 in spi_flash_op_block_func). The burst can't be chunked under the limit easily
   // and the per-core WdtHeavyGuard only covers core 0, so give the dog enough headroom to ride the
   // burst out while still catching a genuine multi-second hang. (Fixes the random WDT reboots, GH #56.)
-  esp_task_wdt_init(20, true);   // 20 s grace (was ~5 s), keep panic. Re-init reconfigures the
+  esp_task_wdt_init(WADA_WDT_GRACE_SEC, true);   // grace = WADA_WDT_GRACE_SEC (was 20s), keep panic. Re-init reconfigures the
                                  // already-running TWDT + keeps the idle-task subscriptions.
 
 #if defined(ESP32_PLATFORM) && defined(HAS_TOUCH_UI)
@@ -1130,7 +1146,7 @@ void setup() {
   }
 #endif
 
-  bool radio_ok = radio_init();
+    bool radio_ok = radio_init();
   if (!radio_ok) { delay(150); radio_ok = radio_init(); }   // one retry: transient SPI/reset flakes
 #if defined(PIN_PERF_POWERON)
   // Last resort: do what the error screen would otherwise ask the USER to do —
@@ -1869,20 +1885,8 @@ void setup() {
   /* Wi-Fi and NimBLE coexist, but their first allocations are order-sensitive
    * on the Pager. Claim Wi-Fi's DMA/coexistence resources before starting BLE;
    * T-Deck does not reproduce this sequencing constraint. */
-  #ifndef WADA_NO_WIFI_BRINGUP
-#define WADA_NO_WIFI_BRINGUP 0
-#endif
 
-// BRING-UP (Waveshare V4-R2): Wi-Fi init is what kills this build. MEASURED by
-  // bisect: the last bread printed before the panic is "b want_wifi true", so the
-  // fault is inside this block -- WiFi.onEvent() push_back into the core's event
-  // std::vector, or WiFi.mode(WIFI_STA)'s esp_wifi_init. That is exactly the race
-  // the long comment above documents (core bug: the vector is reallocated by us
-  // while the core's _arduino_event_task walks it; a real dump exists from a V4-R8).
-  // BLE below is unaffected -- earlier logs reach "[boot] BLE co-init OK".
-  // The companion transport is not needed to verify display/touch/SD/LoRa/CardKB,
-  // so skip it here rather than chase a core race. See WADA_NO_WIFI_BRINGUP.
-  const bool want_wifi = wifiConfigWantsWifi() && !WADA_NO_WIFI_BRINGUP;
+const bool want_wifi = wifiConfigWantsWifi();
 #if defined(TLORA_PAGER)
   bool pager_wifi_ready_for_ble = false;
   const bool pager_want_ble = wifiConfigGetBleEnabled();
