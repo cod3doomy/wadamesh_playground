@@ -9,8 +9,20 @@
 // back to a datasheet default:
 //
 //   * Panel ........... Waveshare 3.5" ST7796S, natively 320x480 PORTRAIT.
-//                       Rotation 0/2 gives 480x320 LANDSCAPE, which is what this
-//                       build runs (TFT_WIDTH=480 / TFT_HEIGHT=320).
+//                       TFT_WIDTH=320 / TFT_HEIGHT=480 are the NATIVE values and
+//                       must stay that way. Rotations 0/2 are the portrait ones;
+//                       rotations 1/3 are landscape. This build runs
+//                       DISPLAY_ROTATION=1, i.e. MADCTL 0x20 (TFT_MAD_MV), for a
+//                       480x320 landscape UI.
+//                       DISCARDED THEORY -- do not resurrect it: "declare
+//                       TFT_WIDTH=480 / TFT_HEIGHT=320 as a landscape pair and
+//                       write raw MADCTL by hand instead of calling
+//                       setRotation()". That is DEAD. It desynchronised TFT_eSPI's
+//                       cached `rotation` member from the GRAM's real orientation,
+//                       so setWindow()'s `if (rotation & 0x01) transpose(x0, y0)`
+//                       never transposed. It was a real bug -- but it was NOT the
+//                       heap corruption / boot loop. See the boot-loop note in
+//                       platformio.ini (PIN_TFT_RST) for what that actually was.
 //   * Bus ............. 4-wire SPI with NO MISO (TFT_MISO=-1). Write-only.
 //   * SPI3 ............ the SX1262 owns SPI2 on this board, so the panel is on
 //                       SPI3 (-D USE_HSPI_PORT=1).

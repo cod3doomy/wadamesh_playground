@@ -127,7 +127,8 @@ bool heltecV4CapTouchBegin() {
     return false;
   }
 
-  // The Wire bus is on SDA=9/SCL=40, already begun by ESP32Board::begin().
+  // The Wire bus is the BOARD bus (on Heltec V4: SDA=38/SCL=4, i.e.
+  // PIN_BOARD_SDA/PIN_BOARD_SCL), already begun by ESP32Board::begin().
   // Bump speed for touch (the board default is 100kHz).
   // Short timeout prevents a stuck FT5x06 from stalling the main UI loop.
   Wire.setClock(400000);
@@ -141,7 +142,7 @@ bool heltecV4CapTouchBegin() {
   // Probe
   Wire.beginTransmission(FT5x06_ADDR);
   if (Wire.endTransmission() != 0) {
-    snprintf(s_scan_str, sizeof s_scan_str, "i2c9/40: no ACK at 0x%02X", FT5x06_ADDR);
+    snprintf(s_scan_str, sizeof s_scan_str, "i2c38/4: no ACK at 0x%02X", FT5x06_ADDR);
     Serial.printf("[TOUCH] FT5x06 not found (retry %d/3)\n", s_retries);
     return false;
   }

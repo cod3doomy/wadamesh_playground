@@ -1,7 +1,12 @@
 # Heltec V4-R2 + Waveshare 3.5" capacitive-touch LCD — bring-up findings
 
-**Status: WORKING.** Display, radio and companion link verified on real hardware
+**Status: WORKING.** Display, touch, radio RX and CardKB verified on real hardware
 (2026-10-16). Touch is now enabled and verified; SD remains the only disabled item.
+Two caveats are carried as open items and **neither contradicts this status**:
+`ARDUINO_USB_MODE=1` is still set (bring-up-only, and the reason the CDC diagnostic
+channel works at all), and the Wi-Fi/BLE PHY double-init warning is unresolved with
+Wi-Fi/BLE itself disabled. Companion-*web* reachability is **not** among the verified
+items.
 Panel identity confirmed as Waveshare SKU **29318**, `3.5inch Capacitive Touch LCD`
 (ST7796S + FT6336U + TF slot). Items still requiring hardware are marked **[HW]**.
 
@@ -9,13 +14,20 @@ Panel identity confirmed as Waveshare SKU **29318**, `3.5inch Capacitive Touch L
 first two entries in this document — the "open heap corruption" blocker and the
 `WADA_*` bring-up scaffolding around Wi-Fi/BLE — are both **closed and were wrong**.
 The boot loop was never heap corruption; it was the panel reset line parked on the
-ESP32-S3's PSRAM chip-select. Re-deriving that will cost another day.
+ESP32-S3's PSRAM chip-select. Re-deriving that will cost another day. "Closed" for the
+`WADA_*` work means only the specific toggles named below are gone — the bisect,
+stack-profiling and boot-counter scaffolding is **still compiled in** and is simply
+never enabled on this build.
 
 **Target env: `heltec_v4_st7796_companion_radio_touch`** (`platformio.ini:253-557`).
 The stock `heltec_v4_tft_companion_radio_usb_tcp_touch` env is **out of scope**.
 
 ⚠️ **This config is R2-only.** On the V4-R8 (octal PSRAM) GPIOs 33–37 are consumed by
-PSRAM, so `LCD_CS=33` dies. Heltec documents this as a hard incompatibility.
+PSRAM, and this env collides on **five** of them at once — `LCD_CS=33`, `GPS_EN=34`,
+`EXPANSION_IO=35`, `VEXT=36`, `ADC_CTRL=37`. Because the collision is five pads wide,
+the "override the R8 deltas" trick the `heltec_v4_r8` env uses to rescue its own
+overlaps does **not** rescue this one: there is no small subset left to remap. Heltec
+documents this as a hard incompatibility.
 
 ## Build environment prerequisite (Windows)
 
@@ -50,8 +62,17 @@ launched shells only.
 
 **This was the whole thing.** The original diagnosis in this document was "heap
 corruption in TLSF, victim moves between runs". That was wrong, and it sent the
-bring-up down several dead ends (`WADA_NO_WIFI_BRINGUP`, `WADA_NO_BLE_BRINGUP`,
-`WADA_RXLOG_NO_PSRAM`, `WADA_DISP_NO_PUSH`, `WADA_REBOOT_DIAG` — all now removed).
+bring-up down several dead ends (`WADA_NO_WIFI_BRINGUP`, `WADA_NO_BLE_BRINGUP`, the
+RX-log no-PSRAM toggle, `WADA_DISP_NO_PUSH`, `WADA_REBOOT_DIAG`).
+
+⇒ Those **named** toggles are genuinely gone from the source — grep `main.cpp` for any
+of them and you get nothing. What is **not** gone is the scaffolding around them:
+`WADA_BISECT` (37 call sites in `main.cpp`), `WADA_STK`, `WADA_BC_REPORT` and
+`WADA_WDT_GRACE_SEC` are all still defined and still compile in. They are inert — the
+`#ifndef` fallbacks turn each into `do { } while (0)` unless the flag is set at build
+time — but "all `WADA_*` removed" is **false** as stated. Treat this section as: the
+Wi-Fi/BLE/PSRAM/diagnostic toggles are gone; the bisect, stack-profiling and
+boot-counter instrumentation remains.
 
 On the ESP32-S3 in the Heltec V4-R2, **GPIO26 is the PSRAM chip-select**. The SDK's
 `sdkconfig` for this target has `CONFIG_SPIRAM_CS_IO=26`. Our pin budget had parked
@@ -124,20 +145,23 @@ false pass.
 | Area | Finding |
 |---|---|
 | **Build environment** | This repo cannot build when the Windows username contains a space: PlatformIO expands ~212 include flags under that home dir, SCons passes them unquoted, and every compile dies with `CreateProcess: No such file or directory`. The compiler itself is fine. Fixed with a `C:\pio` junction to `%USERPROFILE%\.platformio` plus `setx PLATFORMIO_CORE_DIR C:\pio`. Affects every PlatformIO project on the machine. |
-| **Flash headroom** | Measured **3,960,985 / 6,160,384 = 64.3%** of flash, ~2.1 MB free. The old `99.7%` claim at `platformio.ini:259-262` was **stale** (written before `partitions_st7796.csv` widened the app slots). Corrected. |
-| **`TFT_MISO=-1`** | This is a **4-wire** panel — write-only, no MISO line brought out. A register readback returning `COLMOD=0xFF` is the tell: reads fail closed, so any "SPI readback" evidence collected through MISO on this build is meaningless. Leave `TFT_MISO=-1`. |
+| **Flash headroom** | Measured **3,976,000 / 6,160,384 = 64.5%** of flash, ~2.1 MB free (post-touch build). The earlier **3,960,985 = 64.3%** figure was the *pre-touch* build and is stale. The `99.7%` claim in the env's flash-headroom comment in `platformio.ini` was **stale** too (written before `partitions_st7796.csv` widened the app slots). Corrected. |
+| **`TFT_MISO=-1`** | Correct **for the display register readback**: this is a **4-wire** panel, so reads fail closed and a readback returning `COLMOD=0xFF` is the tell — any "SPI readback" evidence collected through MISO on this build is meaningless. But it is **not** correct for the TF card, which `TFT_MISO=-1` makes deterministically unreadable. See Phase 3 step 1; SD needs `TFT_MISO=18`. |
 | **Display geometry** | Declare the panel at its **NATIVE `TFT_WIDTH=320` / `TFT_HEIGHT=480`** and call **`setRotation(1)`**. Declaring it landscape and hand-writing MADCTL is wrong: TFT_eSPI caches its rotation state and desynchronises from the register, so the address window, the driver's assumed dimensions and the hardware all disagree. `setRotation()` keeps the cache and the register in step. |
 | **UI rotation pinning** | `s_ui_rotation` must be pinned to **`LV_DISP_ROT_90`** in `UITask.cpp`. It is a **persisted pref** that *overrides* `DEFAULT_UI_ROTATION`, and `device_caps.h` sets `CAP_ROTATABLE 0` for this target, so the UI offers no way to change it back. An unpinned value therefore sticks forever. |
-| **Pin map** | Verified by I2C scan: CardKB **ACK 0x5F** on GPIO15/16 and answers `requestFrom`; backlight responds on GPIO6. Panel touch bus is **0x38** on GPIO38/4 but is currently unused — see the voltage issue. |
+| **Pin map** | Verified by I2C scan: CardKB **ACK 0x5F** on GPIO15/16 and answers `requestFrom`; backlight responds on GPIO6. Panel touch bus is **0x38** on GPIO38/4 and is **live** — the FT6336U is driven and taps verified on it (see the overvoltage section: that issue is resolved). |
+| **GPIO39 hidden pull-up** | `PIN_TOUCH_INT` is **undefined** in this env, so `RakTapV2Touch.cpp` defaults it to **39** and calls `pinMode(39, INPUT_PULLUP)` on every boot. GPIO39 is **`PIN_GPS_TX`**. So a pad the reserved-pin analysis below does not list gets an internal pull-up at boot. Harmless while the GNSS header is unpopulated, but GPIO39 is **not** an unused pad — count it in the pin inventory. |
 | **CardKB bus** | Needs its **own I2C peripheral on GPIO15/16**, not a second `TwoWire` alias onto the board bus. Beyond the TXS0108E contention argument already recorded below: **polling the panel's touch line for an absent device wedged SCL and stalled the UI for 525 ms every second.** An isolated bus cannot do that. |
 | **GPIO38 collision** | `PIN_GPS_RX=38` and `PIN_BOARD_SDA=38` claim the same pad. `EnvironmentSensorManager::begin()` calls `initBasicGPS()` first and takes GPIO38. **GPS cannot coexist with the panel's touch bus on this board** — mutually exclusive, not a bring-up-only setting. |
 | **CardKB ACKing** | The repo comment claiming the CardKB "never ACKs a bare address probe" is **false** — it ACKs. `requestFrom` is still correct and is kept. |
 
-### STILL OPEN — the panel I2C pull-ups overvoltage
+### RESOLVED IN HARDWARE — the panel I2C pull-ups overvoltage
 
-**Unresolved, and it is why touch and SD are disabled.** The panel's I2C pull-ups are
-referenced to **VCC, not 3V3**. With VCC on 5 V this drove **GPIO38 to 4.23 V**,
-against the ESP32-S3's **3.6 V absolute maximum**. ESP32-S3 GPIOs are not 5V-tolerant.
+**Resolved. It was why touch and SD were disabled; touch has since been enabled and
+verified, and `CAP_SD` is the only thing still at 0.** The original fault: the panel's
+I2C pull-ups are referenced to **VCC, not 3V3**. With VCC on 5 V this drove **GPIO38 to
+4.23 V**, against the ESP32-S3's **3.6 V absolute maximum**. ESP32-S3 GPIOs are not
+5V-tolerant.
 
 Both `CAP_TOUCH` and `CAP_SD` in `src/ui-touch/device_caps.h` were originally held at 0
 as a deliberate voltage safety hold. **Touch has since been enabled and verified**
@@ -153,12 +177,14 @@ V4's 3.3 V rail.
 
 ### Firmware bugs found and fixed on the way
 
-1. `main.cpp:932` — `heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)` **panics when PSRAM is present**; its own `if (psram_bytes)` guard passes precisely in the failing case.
-2. `main.cpp:1713` — the "last resort format" fallback **defeated the SPIFFS-skip diagnostic**, so every boot died in the `esp_spiffs_init` path the diagnostic existed to avoid.
+1. `main.cpp` (`heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)` call) — **panics when PSRAM is present**; its own `if (psram_bytes)` guard passes precisely in the failing case.
+2. `main.cpp` (the `esp_spiffs_init` "last resort format" fallback) — **defeated the SPIFFS-skip diagnostic**, so every boot died in the `esp_spiffs_init` path the diagnostic existed to avoid.
 3. `GPIO17` (`PIN_SD_CS`) was **unconfigured and floating** while the display drove SPI3; now parked HIGH before display init.
 4. Fourteen `ENV_INCLUDE_*` sensor drivers compiled against a bus holding **exactly one device**.
 5. **`loopTask`'s default 8 KB stack was exhausted** (free stack 0 of 8192). Fixed with `ARDUINO_LOOP_STACK_SIZE=16384`. **This is a real bug and worth keeping — but it was NOT the boot loop.** `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY` is off on this target, so that stack could never reach the corrupted PSRAM and could not have been the victim. **This is probably not Waveshare-specific** either: other boards run the same heavy `setup()` on 8 KB.
-6. The Arduino-core Wi-Fi event-vector race (`WiFi.onEvent()` / `WiFi.mode(WIFI_STA)` push_back vs. `_arduino_event_task` walk) is a genuine core bug with a V4-R8 dump in-repo — but it was **not** what was crashing this build. Both transports run normally now; the `WADA_*` gates that suppressed them are gone.
+6. The Arduino-core Wi-Fi event-vector race (`WiFi.onEvent()` / `WiFi.mode(WIFI_STA)` push_back vs. `_arduino_event_task` walk) is a genuine core bug with a V4-R8 dump in-repo — but it was **not** what was crashing this build. Both transports run normally now; the
+Wi-Fi/BLE bring-up gates that suppressed them are gone. (This does **not** imply the
+whole `WADA_*` namespace was deleted — see root cause #1.)
 
 ### Bring-up workflow notes
 
@@ -177,7 +203,7 @@ most of what is needed:
 |---|---|
 | LCD driver | **DONE** — `variants/heltec_v4/St7796WaveshareDisplay.{h,cpp}`, MEASURED |
 | Touch driver | **DONE** - `src/helpers/input/RakTapV2Touch.cpp`, FT5x06 at `0x38`. Re-targeted, not written; tap placement verified on hardware |
-| SD support | **NEARLY DONE** - `mapSdStorage()` + `fmIsSd()` ship on 8 other boards; needs `CAP_SD=1` and two pins |
+| SD support | **NEEDS REAL WORK** - `mapSdStorage()` + `fmIsSd()` ship on 8 other boards, but `HELTEC_LORA_V4_ST7796` is **not in that block's gate**, so this target compiles **none** of the mount path today. Needs a gate addition, a correct SPI handle and `TFT_MISO=18` — see Phase 3 |
 | CardKB | **DONE** - `src/helpers/input/CardKbKeyboard.cpp`, 73 lines, protocol verified |
 
 ⇒ The project is porting and wiring, not development.
@@ -225,28 +251,52 @@ backlight — feeding it from a switched rail browns out unless firmware enables
 | 3 | GND | **GND** | |
 | 5 | MOSI | **48** | SPI3 |
 | 6 | SCLK | **47** | SPI3, **20 MHz** MEASURED |
-| 4 | MISO | *not brought out* | **4-wire panel — write-only.** `TFT_MISO=-1` |
-| 8 | LCD_CS | **33** | R2 only (see warning above) |
+| 4 | MISO | *claimed GPIO18* | ⚠️ **UNVERIFIED** — see below. Needs `TFT_MISO=18` for SD |
+| 8 | LCD_CS | **33** | R2 only — one of five pads lost to R8 PSRAM |
 | 9 | LCD_DC | **21** | Heltec `OLED RST` — harmless, no OLED fitted |
 | 10 | LCD_RST | **3** | ⚠️ **NOT 26.** 26 is the PSRAM chip-select — see root cause #1 |
 | 11 | LCD_BL | **6** | active-high PWM, MEASURED |
-| 7 | SD_CS | **17** | new |
-| 12 | TP_SDA | **38** | I2C1, touch only — ⚠️ overvoltage, see below |
-| 13 | TP_SCL | **4** | I2C1, touch only — ⚠️ overvoltage, see below |
+| 7 | SD_CS | **17** | **DONE** — in the env, and parked HIGH before display init |
+| 12 | TP_SDA | **38** | I2C1, touch — live and verified; overvoltage now resolved |
+| 13 | TP_SCL | **4** | I2C1, touch — live and verified; overvoltage now resolved |
 | 14 | TP_INT | *unconnected* | driver polls |
 | 15 | TP_RST | *unconnected* | power-on reset |
 
+**GPIO39 is also claimed, invisibly.** `PIN_TOUCH_INT` is undefined in this env, so
+`RakTapV2Touch.cpp` falls back to **39** and calls `pinMode(39, INPUT_PULLUP)` at
+driver init. GPIO39 is `PIN_GPS_TX`. It is not in the panel's FPC and not in the table
+above, but it is a pad this build actively reconfigures — see the findings table.
+
 `17`/`18` confirmed as header pins by the user; they are unpopulated OLED pins per
 `variants/heltec_v4/pins_arduino.h:60-61`. ⇒ Safe to reuse, and GPIO21 working as
-`LCD_DC` independently proves no OLED is fitted.
+`LCD_DC` independently proves no OLED is fitted. ⚠️ This confirms the *header pins are
+free* — it does **not** confirm that the TF slot's MISO is actually wired to GPIO18.
+That is a separate, unproven claim (see above).
 
-**MISO does not exist on this panel.** The original budget assumed pin 4 would let
-`SD.begin()` read the CSD. It does not — the module is a 4-wire write-only display.
-⇒ `TFT_MISO=-1` is correct and there is no MISO pin to wire. The tell was a register
-readback returning `COLMOD=0xFF`: reads fail closed rather than returning garbage, so
-an earlier "SPI readback confirms…" conclusion drawn through MISO was unfounded.
-This has a knock-on for Phase 3: **SD cannot be brought up without MISO**, which is
-one more reason `CAP_SD=0` is not yet a decision anyone should revisit casually.
+**MISO is two separate questions, and conflating them is what broke Phase 3.**
+For the **display register readback**, the panel is effectively 4-wire write-only, so
+`TFT_MISO=-1` is correct: reads fail closed rather than returning garbage, and a
+readback returning `COLMOD=0xFF` is the tell. An earlier "SPI readback confirms…"
+conclusion drawn through MISO was therefore unfounded.
+
+For the **TF card**, `TFT_MISO=-1` is not merely inconvenient — it is fatal. `SDFS::begin()`
+calls `spi.begin()` with **no arguments**; `SPIClass::begin()` opens with
+`if(_spi) { return; }`, and TFT_eSPI has already run `spi.begin(47,-1,48,33)` during
+display init, so SD's call is a **complete no-op**. On ESP32-S3 the resulting
+`spiAttachMISO(_spi, -1)` hits the *"HSPI Does not have default pins on ESP32S3!"* branch
+and attaches nothing: **GPIO18 is never routed into SPI3 at all.** Every SD init command
+is a READ, so the mount fails **100% of the time** — not sometimes, not on some cards.
+
+⇒ **`TFT_MISO=18` is required for SD.** The env's own comment block already describes
+this correctly; it is this document that discarded it. One flag serves both uses: the
+register readback starts working *and* the card becomes readable. Phase 3 step 1 owns
+the detail.
+
+⚠️ **But GPIO18 itself is an unproven hardware precondition.** The claim that the TF
+slot's MISO lands on GPIO18 comes from a comment transcribing the module schematic.
+GPIO18 appears in **no wiring-table row and in no build flag** in this repo, so nothing
+here can confirm it. Continuity-check it before starting SD work — if the wire is not
+there, no amount of firmware reaches the card.
 
 ### 0.2 CardKB — separate bus, and the pull-up decision **[HW]**
 
@@ -259,12 +309,15 @@ one more reason `CAP_SD=0` is not yet a decision anyone should revisit casually.
 
 ⚠️ **Do NOT repoint `PIN_BOARD_SDA`/`PIN_BOARD_SCL` at 15/16.** Those flags also carry
 every environment sensor (`ENV_INCLUDE_AHTX0`, `BME280`, `SHTC3`, `SHT4X`, `INA3221`, … —
-`platformio.ini:295-309`), and the sensors are physically wired to 38/4. Moving the board
-bus silently disconnects all of them.
+the `ENV_INCLUDE_*` flag block in this env), and the sensors are physically wired to
+38/4. Moving the board bus silently disconnects all of them.
 
 ⇒ CardKB needs **dedicated** flags (`PIN_CARDKB_SDA`/`PIN_CARDKB_SCL`) and its own
-`TwoWire`. `CardKbKeyboard.cpp` currently uses bare `Wire` and inherits the board bus
-(`CardKbKeyboard.cpp:41-43`), so this is a code change, not a config flip.
+`TwoWire`. **This is DONE — not an outstanding item.** `PIN_CARDKB_SDA=15` /
+`PIN_CARDKB_SCL=16` are set in the env, and `CardKbKeyboard.cpp` already declares its own
+`TwoWire s_cardkb_bus(1)` and calls `s_cardkb_bus.begin(PIN_CARDKB_SDA, PIN_CARDKB_SCL,
+100000)`; the bare `Wire` fallback survives only in an `#else` for legacy boards with no
+dedicated pins. Both landed **before this branch's HEAD**.
 
 The CardKB's ATmega8A enables its **own internal I2C pull-ups** (20–50 kΩ), pulling
 toward its own VCC. ESP32-S3 GPIOs are not 5V-tolerant (abs max 3.6V). Bus high level is
@@ -289,10 +342,13 @@ rely on the panel's — they are on the other side of the translator now.
 
 ### 0.3 GPIO38 collision — resolve before power-up **[HW]**
 
-`PIN_GPS_RX=38` (`platformio.ini:348`) and `PIN_BOARD_SDA=38` (`:358`) claim the same pad
-while `ENV_INCLUDE_GPS=1` (`:295`). Confirm the GNSS header is unpopulated. Note the
-V4's GNSS connector spans GPIO38–42, so it also sits under `PIN_GPS_TX=39`,
-`PIN_GPS_RESET=42`, `PIN_GPS_EN=34`.
+`PIN_GPS_RX=38` and `PIN_BOARD_SDA=38` (both build flags in this env) name the same
+pad. Today the collision is held off by `ENV_INCLUDE_GPS=0` — with it at 1,
+`EnvironmentSensorManager::begin()` takes GPIO38 for `initBasicGPS()` and the touch bus
+dies. Confirm the GNSS header is unpopulated before anyone flips that flag back on.
+Note the V4's GNSS connector spans GPIO38–42, so it also sits under `PIN_GPS_TX=39`
+(which the touch driver additionally pull-ups — see the findings table),
+`PIN_GPS_RESET=42` and `PIN_GPS_EN=34`.
 
 ### 0.4 Flash decision — data-loss gate
 
@@ -331,10 +387,10 @@ address `0x38`, already implementing the full 13-function `HeltecV4CapTouch` con
 
 1. **Re-gate the driver.** It is gated on `HAS_RAK_TAP_V2`, which would drag in RAK
    board/radio code. Introduce a neutral `HAS_FT5X06_TOUCH`, add it to `TDeckTouch.cpp`'s
-   exclusion list, and drop `TDeckTouch.cpp` from `build_src_filter`
-   (`platformio.ini:459-470`) once only the FT5x06 driver compiles — otherwise two files
-   define the same symbols.
-2. **Re-target geometry.** `RAW_W=240 / RAW_H=320` (`:43-44`) must become the panel's
+   exclusion list, and drop `TDeckTouch.cpp` from this env's `build_src_filter` block in
+   `platformio.ini` once only the FT5x06 driver compiles — otherwise two files define
+   the same symbols.
+2. **Re-target geometry.** `RAW_W` / `RAW_H` in `RakTapV2Touch.cpp` must become the panel's
    native **320x480 portrait**, then map to 480x320 landscape. The FT6336U reports in
    native portrait with the **y origin at the FPC end**, and the ST7796 has no rotation
    register - so this is 100% host-side math and is the one genuinely novel code in the
@@ -367,7 +423,8 @@ address `0x38`, already implementing the full 13-function `HeltecV4CapTouch` con
 9. **Leave INT alone.** M5Stack's own experience: an INT-low only means the chip has
    data, not that a transaction is safe on a shared bus — and we no longer share it, so
    there is no reason to use INT at all.
-10. **Flip the capability:** `CAP_TOUCH` 0 -> 1 at `src/ui-touch/device_caps.h:136`, and
+10. **Flip the capability:** `CAP_TOUCH` 0 -> 1 at `#define CAP_TOUCH` in the ST7796 block
+    of `src/ui-touch/device_caps.h`, and
     retire the no-op `variants/heltec_v4/St7796NoTouch.cpp`. **DONE** (commit `08f7fda`),
     and both reasons this was originally held are now gone: the GPIO38 overvoltage was
     fixed in hardware (CardKB moved to 3.3 V, so all SDA/SCL now measure 3.3 V against a
@@ -391,16 +448,18 @@ address `0x38`, already implementing the full 13-function `HeltecV4CapTouch` con
     The wrong geometry **masked** the rotation, so the rotation was only diagnosable
     once the dimensions were right. Fixing them in the other order would have sent
     you chasing a rotation fault that does not exist yet.
-11. **Flash budget — measured, and a non-issue.** A successful build reports
-    **3,960,985 of 6,160,384 bytes = 64.3%**, leaving ~2.1 MB. The app0 slot in
-    `partitions_st7796.csv` is `0x010000`–`0x5F0000` = 6,160,384 bytes, matching the
-    reported maximum exactly. RAM is 164,692 of 2,097,152 = 7.9%.
+11. **Flash budget — measured, and a non-issue.** A successful post-touch build reports
+    **3,976,000 of 6,160,384 bytes = 64.5%**, leaving ~2.1 MB. The earlier
+    **3,960,985 = 64.3%** reading was the **pre-touch** build and is stale — quoted here
+    only so the two are not confused. The app0 slot in `partitions_st7796.csv` is
+    `0x010000`–`0x5F0000` = 6,160,384 bytes, matching the reported maximum exactly. RAM is
+    164,692 of 2,097,152 = 7.9%.
 
-    ⚠️ The comment at `platformio.ini:259-262` claiming this env sits at **99.7%** and
-    "leaves no room for the FT6336U touch driver" was **stale** — written against the
-    smaller app slots before `partitions_st7796.csv` widened them. It has since been
-    corrected to the measured 64.3%. Do not trim `deploy/apps` or shrink `spiffs` on
-    the strength of either figure.
+    ⚠️ The flash-headroom comment at the top of the env block in `platformio.ini`,
+    claiming this env sits at **99.7%** and "leaves no room for the FT6336U touch
+    driver", was **stale** — written against the smaller app slots before
+    `partitions_st7796.csv` widened them. Do not trim `deploy/apps` or shrink `spiffs`
+    on the strength of any of these figures.
 
 **Colour order note:** Waveshare's two official demos **disagree** — the ESP-IDF BSP
 forces BGR, the Arduino demo passes RGB. The repo's `TFT_RGB_ORDER=TFT_RGB` +
@@ -427,32 +486,71 @@ Scope is mount-and-prove only.
 same `MOSI`/`SCLK`/`MISO` nets as the ST7796, differing only by CS. It is *not* a second
 SPI peripheral. DAT1/DAT2 are unconnected, so **4-bit SDIO is physically impossible**.
 
-⇒ Use **`SD.h` over the shared SPI3 `SPIClass`**, exactly as Waveshare's demo does
-(`SD.begin(SD_CS, fspi)`). Do **not** use `SD_MMC` — that applies to the
-*ESP32-S3-Touch-LCD-3.5* board, not this module.
+⇒ Use **`SD.h` over the display's own `SPIClass`**, obtained from
+**`TFT_eSPI::getSPIinstance()`**. That is the same object the ST7796 drives and the same
+one TFT_eSPI's own SD example passes to `SD.begin()`; there is no `fspi` symbol in this
+repo and an earlier revision of this document told the reader to pass one. Do **not**
+use `SD_MMC` — that applies to the *ESP32-S3-Touch-LCD-3.5* board, not this module.
 
-1. Add `PIN_SD_CS=17`. **There is no MISO to enable** - the panel is 4-wire
-   write-only, so `TFT_MISO=-1` stays and `SD.begin()` cannot read the CSD over this
-   bus. NOTE: the TF slot does have its own MISO (GPIO 18) per the schematic, so the
-   card path can read even though the LCD path cannot - but they share the net, which
-   is exactly why step 5 matters.
-   The GPIO38 overvoltage that blocked `CAP_SD` alongside touch is RESOLVED (CardKB on
-   3.3 V), so SD is no longer held for a safety reason.
-2. Set `CAP_SD=1` at `src/ui-touch/device_caps.h:139`. **No longer blocked.** The same
-   GPIO38 overvoltage that held touch was the only safety reason for `CAP_SD=0`, and it
-   is resolved. What remains is ordinary bring-up risk, not an electrical hazard.
-3. **Init order is a vendor requirement:** Waveshare's demo states *"SD card
+⚠️ **Three things below are prerequisites, not steps to discover the hard way.** Do them
+in this order or you will burn a hardware session.
+
+1. **Confirm GPIO18 actually reaches the TF slot's MISO.** **[HW]** Every SD fix below
+   rests on this, and it is the **one claim in this section that is not proven**. GPIO18
+   appears in **no wiring-table row and in no build flag** — the claim comes from a
+   comment in `platformio.ini` transcribing the module schematic, which is not evidence
+   you can test. Continuity-check the TF slot's MISO pad to the Heltec header pin you
+   intend to use before anything else. If it is not GPIO18 (or not broken out at all),
+   stop: there is no software fix for a missing wire.
+2. **Set `TFT_MISO=18`** (in the `TFT_MISO` build flag). With `TFT_MISO=-1` the card is
+   not "harder to read" — it is **deterministically unreadable**, as traced in 0.1:
+   SD's argument-less `spi.begin()` is a no-op, nothing routes GPIO18 into SPI3, and
+   every init command is a read. The env's own comment already says `TFT_MISO=-1` is
+   wrong for this panel; that comment was right and this document was wrong to discard
+   it. `PIN_SD_CS=17` is **already set** in the env, and
+   `variants/heltec_v4/HeltecV4Board.cpp` already parks the pad HIGH before display init
+   — that work is **done**, do not redo it.
+3. **Add `HELTEC_LORA_V4_ST7796` to the Arduino-SD gate in `main.cpp`, and give it its
+   own SPI handle.** `CAP_SD=1` **on its own compiles no mount code for this target.**
+   The whole `mapSdStorage()`/SD-mount block sits behind
+   `#if defined(HAS_TDECK_GT911) || HAS_TDECK_PRO || HELTEC_LORA_V4_R8 || TLORA_PAGER ||
+   HAS_THINKNODE_M9 || HAS_CROWPANEL_35`, and `HELTEC_LORA_V4_ST7796` is **not in that
+   list**. Flipping the flag alone produces a build that still has no SD. And the
+   existing `#else` arms there select **`tdeckSharedSPI()`** — the SX1262 **radio** bus
+   (SCK 9 / MISO 11 / MOSI 10 / CS 8). That is the wrong bus *physically*, and on this
+   target it is also an **undeclared symbol** — a link error. So the gate addition and a
+   correct handle are one change, not two:
+   `#elif defined(HELTEC_LORA_V4_ST7796)` → `SPIClass* _spi = TFT_eSPI::getSPIinstance();`
+   (declare it `extern` in the same style as the sibling arms), then
+   `CAP_SD=1` at `#define CAP_SD` in the ST7796 block of `src/ui-touch/device_caps.h`.
+
+4. **Init order is a vendor requirement:** Waveshare's demo states *"SD card
    initialization must be placed after the LCD."* Mount SD only after the panel is up.
-4. **Keep the SD clock well below the LCD clock.** The shared bus runs at 40 MHz
-   MEASURED for the LCD - already capped by the dupont wiring, see root cause #2 -
-   and far too fast for a card. Interleaving high-speed LCD DMA fills with card
-   reads is the classic failure here. `include/SdFastClock.h` exists as a precedent
-   for *raising* it deliberately, so the inverse is safe.
-5. **Keep `LCD_CS` rigorously de-asserted between transactions.** If it idles low, the
-   ST7796 drives `MISO` against the card during SD reads.
-6. **Fix the one known gap:** `fmIsSd()` (`UITask.cpp:23727`) notes *"Heltec V4 ST7796
-   has no Arduino SD global in FM path."*
-7. Report free/total space in Settings; one write → read → delete round trip.
+5. **Keep the SD clock well below the LCD clock.** The shared bus runs at 40 MHz
+   MEASURED for the LCD - and far too fast for a card. Interleaving high-speed LCD DMA
+   fills with card reads is the classic failure here. `include/SdFastClock.h` exists as
+   a precedent for *raising* it deliberately, so the inverse is safe. (The dupont wiring
+   is a suspected limit on the *display* clock, not a measured ceiling — see root cause
+   #2 and note that the 40 MHz causal claim was retracted.)
+6. ⚠️ **Transaction nesting is a real hazard and there is currently no mechanism for it.**
+   SD's `beginTransaction`/`endTransaction` run on the **same `SPIClass` object the
+   display drives**. TFT_eSPI is **not reentrant**, and `beginTransaction` **overwrites
+   the shared clock divider** — so a card transaction changes the display's clock too,
+   and a display push issued inside a card transaction inherits the card's. A panel
+   refresh during an SD write is the realistic interleaving. The known fix on the other
+   boards is a mutex around both sides; **this env does not have one.** Decide on it
+   explicitly rather than discovering it as intermittent tearing.
+7. **Keep `LCD_CS` (GPIO33) rigorously de-asserted between transactions.** If it idles
+   low, the ST7796 drives `MISO` against the card during SD reads. ⚠️ Note that parking
+   `PIN_SD_CS` HIGH is **not** the same thing — it de-asserts the *card*, not the
+   *display*. Nothing in the current build guarantees `LCD_CS` is high while SD is
+   talking, so this step needs an actual assertion (and TFT_eSPI must not be mid-push).
+8. **`fmIsSd()` is NOT a gap — do not edit it.** `UITask.cpp` already gates on
+   `#if CAP_SD ... return fs == &SD;`, so setting `CAP_SD=1` selects the correct
+   definition automatically. The *"Heltec V4 ST7796 has no Arduino SD global in FM
+   path"* arm is simply the `#else` you are removing. Editing that line by hand would be
+   editing the wrong one.
+9. Report free/total space in Settings; one write → read → delete round trip.
 
 **Acceptance [HW]:** card mounts, size reports, round trip succeeds, File Manager shows
 the volume, LCD unaffected throughout.
@@ -467,8 +565,9 @@ appear in the chat view. Goal 4 is complete.
 
 **Not yet confirmed:** LoRa **TX** end-to-end, and companion-web reachability
 (`MULTI_TRANSPORT_COMPANION=1`). Neither blocks goal 4 as scoped; both are worth a pass
-if the companion link is needed. Wi-Fi/BLE is still disabled, and the log still shows
-`addApbChangeCallback(): duplicate func` (PHY double-init) whenever it is enabled.
+if the companion link is needed. Wi-Fi/BLE is disabled on this build, and enabling it
+still logs `addApbChangeCallback(): duplicate func` (PHY double-init) — a known open
+item, not a display/touch/radio fault, and not a contradiction of the DONE status above.
 
 Walk every tab — Chats, Contacts, Home, Map, Sensors, Settings — with touch live. Tab
 registry `src/ui-touch/UITask.cpp:2280-2302`; sensors tab is conditional on
@@ -503,18 +602,22 @@ Driver is complete and the protocol is confirmed against M5Stack's firmware:
   disconnect (`CardKbKeyboard.cpp:35-71`).
 
 Steps:
-1. Wire per 0.2. Add `PIN_CARDKB_SDA=15` / `PIN_CARDKB_SCL=16` and give `CardKbKeyboard.cpp`
-   its own `TwoWire` instance — **do not** repoint `PIN_BOARD_SDA`/`PIN_BOARD_SCL`, which
-   carry the sensors. Fit the external pull-ups explicitly; the panel's 4.7 kΩ pair is on
+1. Wire per 0.2. **The bus work is DONE** — `PIN_CARDKB_SDA=15` / `PIN_CARDKB_SCL=16` are
+   already in the env and `CardKbKeyboard.cpp` already has its own `TwoWire s_cardkb_bus(1)`
+   on those pads; the `Wire` fallback only survives in an `#else` for legacy boards. Do
+   **not** repoint `PIN_BOARD_SDA`/`PIN_BOARD_SCL`, which carry the sensors. What is left
+   here is physical: fit the external pull-ups explicitly — the panel's 4.7 kΩ pair is on
    the other side of its translator and is no longer in circuit for this bus.
 2. `cardKbPresent()` should flip true. Type into the composer; arrows navigate. Confirm
-   the on-screen keyboard stays suppressed via `externalKeyboardTyping()` (`:2877`).
+   the on-screen keyboard stays suppressed via `externalKeyboardTyping()` in `UITask.cpp`.
 
 ### CardKB cautions
 
 - **Reads are destructive.** `requestEvent()` clears `hadPressed` after one read, and the
-  repo has **two poll sites** — `bleKbdUiTick()` (`:50487`) and console mode (`:76038`).
-  Confirm they are mutually exclusive; concurrent polling silently drops ~50% of keys.
+  repo has **two poll sites** — `bleKbdUiTick()` in `UITask.cpp` (its `cardKbPoll()` call)
+  and console mode (`cardKbPoll()` in the console loop, a few lines below the
+  `m9KeyboardPoll()` call above it). Confirm they are mutually exclusive; concurrent
+  polling silently drops ~50% of keys.
 - **~1.8 s of boot delay.** CardKB `setup()` runs LED fades *before* `Wire.begin(0x5f)`,
   so it will not respond for ~2 s. The 1000 ms re-probe covers this.
 - **100 kHz is correct** for this bus and it is now isolated, so nothing can raise it.
@@ -530,32 +633,46 @@ Steps:
 ## Open items, in risk order
 
 
-1. **SD bring-up** - the only disabled feature left (`CAP_SD=0`). Needs `PIN_SD_CS=17`,
-   mount-after-LCD init order, and an SD clock well below the 40 MHz LCD clock. Mount and
-   prove only - no log persistence, no tile backend. **[HW]**
-2. **SD MISO topology** - the LCD path is 4-wire write-only, so `TFT_MISO=-1` stays; the
-   TF slot has its own MISO (GPIO 18) but shares the net. Confirm `SD.begin()` can read the
-   CSD, and that `LCD_CS` is rigorously de-asserted between transactions or the ST7796
-   drives MISO against the card. **[HW]**
-3. **Re-measure GPIO38 under load** before enabling SD. The overvoltage that used to be the
+1. **SD bring-up** - the only disabled feature left (`CAP_SD=0`), and **not** a config
+   flip. `PIN_SD_CS=17` is already set; what is missing is `TFT_MISO=18`, the
+   `HELTEC_LORA_V4_ST7796` gate in `main.cpp` plus its own `TFT_eSPI::getSPIinstance()`
+   handle, and a mutex for the shared-`SPIClass` transaction nesting. Mount and prove
+   only - no log persistence, no tile backend. **[HW]**
+2. **GPIO18 reach is UNVERIFIED** - every SD fix above assumes the TF slot's MISO lands on
+   GPIO18. That claim comes from a comment transcribing the schematic, not from anything
+   provable in the repo: GPIO18 is in no wiring-table row and in no build flag. With
+   `TFT_MISO=-1` the card is *deterministically* unreadable, so confirm this by continuity
+   before writing a line of SD code. **[HW]**
+3. **SPI transaction nesting** - SD and the display share one `SPIClass`; TFT_eSPI is not
+   reentrant and `beginTransaction` overwrites the shared clock divider. Nothing currently
+   serialises the two, and parking `PIN_SD_CS` HIGH does **not** de-assert `LCD_CS`
+   (GPIO33). Needs a real mechanism, not just awareness.
+4. **Re-measure GPIO38 under load** before enabling SD. The overvoltage that used to be the
    top blocker is resolved (CardKB on 3.3 V, all lines now 3.3 V), but confirm it with the
    bus loaded rather than idle. **[HW]**
-4. **Re-test the SPI clock after wiring rework** - 40 MHz is clean 8/8 on dupont jumpers,
-   not a proven ceiling. Short soldered leads should go higher. The *cause* of the old
-   garbling is still unknown, so re-test after rework. **[HW]**
-5. **GPIO38 GNSS collision** - verify the GNSS header is unpopulated (`PIN_GPS_RX=38` and
-   `PIN_BOARD_SDA=38` claim the same pad). **[HW]**
-6. **TXS0108E contention** - designed around by the split-bus decision; revisit only if
+5. **Re-test the SPI clock after wiring rework** - 40 MHz is the current verified-working
+   value, clean 8/8 on dupont jumpers, not a proven ceiling. Short soldered leads should
+   go higher. The *cause* of the old garbling is still unknown and the 40 MHz causal claim
+   was retracted, so re-test after rework. **[HW]**
+6. **GPIO38 GNSS collision** - verify the GNSS header is unpopulated (`PIN_GPS_RX=38` and
+   `PIN_BOARD_SDA=38` claim the same pad; currently held off by `ENV_INCLUDE_GPS=0`).
+   Related: `PIN_TOUCH_INT` is undefined here, so the touch driver pull-ups **GPIO39**,
+   which is `PIN_GPS_TX`. **[HW]**
+7. **TXS0108E contention** - designed around by the split-bus decision; revisit only if
    the split bus proves impractical.
-7. **`ARDUINO_USB_MODE=1` is still set and marked bring-up-only** - reverting drops
+8. **`ARDUINO_USB_MODE=1` is still set and marked bring-up-only** - reverting drops
    TinyUSB `PID_0002` and with it CDC serial, which is the only diagnostic channel used
-   throughout this bring-up. Decide before the port is called finished.
-8. **Wi-Fi/BLE PHY double-init** - `addApbChangeCallback(): duplicate func` appears
-   whenever Wi-Fi/BLE is enabled. Unresolved; Wi-Fi/BLE is currently disabled.
+   throughout this bring-up. Decide before the port is called finished. This is a
+   shipping-hygiene decision, **not** a display/touch/radio defect.
+9. **Wi-Fi/BLE PHY double-init** - `addApbChangeCallback(): duplicate func` appears
+   whenever Wi-Fi/BLE is enabled. Unresolved; Wi-Fi/BLE is currently disabled. Also a
+   hygiene item, **not** a contradiction of the WORKING status: the verified paths are
+   display, touch, LoRa RX and CardKB, none of which use the Wi-Fi/BLE PHY.
 
-Closed: the flash budget (measured 64.5%, ~2.1 MB free - the old 99.7% figure was stale
-and is corrected in `platformio.ini`), the boot loop (PSRAM CS on the panel reset line,
-root cause #1), touch (commit `08f7fda`), the CardKB bus, and goal 4 (UI + LoRa RX).
+Closed: the flash budget (measured 64.5% post-touch, ~2.1 MB free - the 64.3% figure was
+the pre-touch build and the old 99.7% figure was stale), the boot loop (PSRAM CS on the
+panel reset line, root cause #1), touch (commit `08f7fda`), the CardKB bus, and goal 4
+(UI + LoRa RX).
 
 ## Explicitly unconfirmed
 

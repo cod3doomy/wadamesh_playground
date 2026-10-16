@@ -189,20 +189,30 @@ void St7796WaveshareDisplay::setDisplayRotation(uint8_t r) {
   // MEASURED on this panel: the correct landscape orientation is MADCTL=0x20 (MV
   // only). Of the four library rotations, r=1 selects exactly that.
   //
-  // THE EARLIER RAW-MADCTL HACK WAS THE BUG. The env declared TFT_WIDTH=480 /
-  // TFT_HEIGHT=320 -- LANDSCAPE dimensions for a natively 320x480 PORTRAIT panel --
-  // and then wrote MADCTL=0x20 by hand instead of calling setRotation(). That left
-  // TFT_eSPI's cached `rotation` member at 0 while the GRAM was genuinely in MV, so
-  // setWindow()'s `if (rotation & 0x01) transpose(x0, y0)` never transposed. The
-  // library's window arithmetic and the hardware's orientation disagreed, and that
-  // inconsistency is what corrupted the heap (TLSF abort in the first allocator to
-  // walk the damaged free list -- the crash victim moved between SPIFFS.begin and
-  // UITask::begin() as the allocation pattern changed).
+  // THE EARLIER RAW-MADCTL HACK WAS A REAL BUG, BUT NOT THE BOOT LOOP. The env
+  // used to declare TFT_WIDTH=480 / TFT_HEIGHT=320 -- LANDSCAPE dimensions for a
+  // natively 320x480 PORTRAIT panel -- and then wrote MADCTL=0x20 by hand instead
+  // of calling setRotation(). That left TFT_eSPI's cached `rotation` member at 0
+  // while the GRAM was genuinely in MV, so setWindow()'s
+  // `if (rotation & 0x01) transpose(x0, y0)` never transposed and the library's
+  // window arithmetic disagreed with the hardware's orientation.
   //
-  // The fix is not a cleverer raw register write -- it is to stop lying to the
-  // library. Declare the panel at its NATIVE 320x480 in the build flags and let
-  // TFT_eSPI own the rotation, so its cached state, the GRAM orientation and the
-  // address-window math all agree.
+  // It did NOT corrupt the heap. The boot loop -- the TLSF abort in the first
+  // allocator to walk the damaged free list, with the crash victim moving between
+  // SPIFFS.begin() and UITask::begin() as the allocation pattern changed -- was
+  // the panel reset line parked on GPIO26, which is the ESP32-S3's PSRAM
+  // chip-select (CONFIG_SPIRAM_CS_IO=26 in the SDK sdkconfig). TFT_eSPI's init()
+  // runs pinMode(26, OUTPUT), detaching the pad from SPICS in the GPIO matrix,
+  // then holds CE# low for 20 ms. During that window PSRAM had no chip-select
+  // and could not frame its own accesses; its free-list metadata lives in PSRAM,
+  // so the "moving crash victim" was corrupted allocator metadata, not a buffer
+  // overflow from the MADCTL skew. Fix: panel reset moved to GPIO3 (see
+  // PIN_TFT_RST in platformio.ini). The raw-MADCTL hack had nothing to do with it.
+  //
+  // The fix for the rotation desync is not a cleverer raw register write -- it is
+  // to stop lying to the library. The panel is declared at its NATIVE 320x480 in
+  // the build flags and TFT_eSPI owns the rotation, so its cached state, the GRAM
+  // orientation and the address-window math all agree.
   display.setRotation(r);
   setLogicalSize((int)(display.width() / DISPLAY_SCALE_X), (int)(display.height() / DISPLAY_SCALE_Y));
 }
