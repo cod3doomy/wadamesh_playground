@@ -1,7 +1,7 @@
 # Heltec V4-R2 + Waveshare 3.5" capacitive-touch LCD — bring-up findings
 
 **Status: WORKING.** Display, radio and companion link verified on real hardware
-(2026-10-15). Touch and SD remain disabled — see the open voltage issue below.
+(2026-10-16). Touch is now enabled and verified; SD remains the only disabled item.
 Panel identity confirmed as Waveshare SKU **29318**, `3.5inch Capacitive Touch LCD`
 (ST7796S + FT6336U + TF slot). Items still requiring hardware are marked **[HW]**.
 
@@ -158,9 +158,9 @@ most of what is needed:
 | Item | Existing state |
 |---|---|
 | LCD driver | **DONE** — `variants/heltec_v4/St7796WaveshareDisplay.{h,cpp}`, MEASURED |
-| Touch driver | **NEARLY DONE** — `src/helpers/input/RakTapV2Touch.cpp`, FT5x06 at the same address `0x38`; needs re-targeting, not writing |
-| SD support | **NEARLY DONE** — `mapSdStorage()` + `fmIsSd()` ship on 8 other boards; needs `CAP_SD=1` and two pins |
-| CardKB | **DONE** — `src/helpers/input/CardKbKeyboard.cpp`, 73 lines, protocol verified |
+| Touch driver | **DONE** - `src/helpers/input/RakTapV2Touch.cpp`, FT5x06 at `0x38`. Re-targeted, not written; tap placement verified on hardware |
+| SD support | **NEARLY DONE** - `mapSdStorage()` + `fmIsSd()` ship on 8 other boards; needs `CAP_SD=1` and two pins |
+| CardKB | **DONE** - `src/helpers/input/CardKbKeyboard.cpp`, 73 lines, protocol verified |
 
 ⇒ The project is porting and wiring, not development.
 
@@ -343,9 +343,30 @@ address `0x38`, already implementing the full 13-function `HeltecV4CapTouch` con
 9. **Leave INT alone.** M5Stack's own experience: an INT-low only means the chip has
    data, not that a transaction is safe on a shared bus — and we no longer share it, so
    there is no reason to use INT at all.
-10. **Flip the capability:** `CAP_TOUCH` 0→1 at `src/ui-touch/device_caps.h:136`, and
-    retire the no-op `variants/heltec_v4/St7796NoTouch.cpp`. ⚠️ **NOT DONE, and it must
-    not be.** `CAP_TOUCH=0` is a deliberate voltage safety hold, not a leftover.
+10. **Flip the capability:** `CAP_TOUCH` 0 -> 1 at `src/ui-touch/device_caps.h:136`, and
+    retire the no-op `variants/heltec_v4/St7796NoTouch.cpp`. **DONE** (commit `08f7fda`),
+    and both reasons this was originally held are now gone: the GPIO38 overvoltage was
+    fixed in hardware (CardKB moved to 3.3 V, so all SDA/SCL now measure 3.3 V against a
+    3.6 V absolute maximum -- driving the FT6336U at 4.23 V was genuinely unsafe), and
+    the shared-bus conflict was fixed by the dedicated CardKB bus on GPIO15/16.
+    The FT5x06 driver already existed at `0x38`, gated to `HAS_RAK_TAP_V2`; the earlier
+    belief that the repo had no FT5x06 driver was **wrong** -- it needed re-targeting,
+    exactly as the status table predicted. `St7796NoTouch.cpp` is *suppressed*, not
+    deleted: `-D ST7796_TOUCH_FT5X06=1` selects the real driver and unsetting the flag
+    returns to a keyboard-only UI. Both providers define the same 13-function contract,
+    so they cannot coexist at link time.
+
+    **Two real defects, fixed in this order -- the order matters.**
+    - *Geometry.* `RAW_W/RAW_H/SCR_W/SCR_H` were hardcoded to the RAK WisMesh 240x320.
+      This panel is 320x480 raw portrait with 480x320 landscape output, so every
+      coordinate was clamped into a 320x240 box. Now guarded by
+      `#if defined(HELTEC_LORA_V4_ST7796)` with the RAK values in the `#else`.
+    - *Rotation.* With geometry correct, the top of the UI selected the bottom
+      (`RAK_TS_FLIP_Y`), and X was still mirrored -- together a 180 degree rotation
+      (`RAK_TS_FLIP_X`).
+    The wrong geometry **masked** the rotation, so the rotation was only diagnosable
+    once the dimensions were right. Fixing them in the other order would have sent
+    you chasing a rotation fault that does not exist yet.
 11. **Flash budget — measured, and a non-issue.** A successful build reports
     **3,960,985 of 6,160,384 bytes = 64.3%**, leaving ~2.1 MB. The app0 slot in
     `partitions_st7796.csv` is `0x010000`–`0x5F0000` = 6,160,384 bytes, matching the
@@ -362,9 +383,15 @@ forces BGR, the Arduino demo passes RGB. The repo's `TFT_RGB_ORDER=TFT_RGB` +
 `TFT_INVERSION_ON=1` is MEASURED working and supersedes both. Don't change it on the
 strength of the datasheets.
 
-**Acceptance [HW]:** Settings → Diagnostics shows a real `heltecV4CapTouchDebug()` string
-(not `"touch: none"`); raw coords via `heltecV4CapTouchGetRaw()` are sane in all four
-corners; taps and swipes land correctly at `DISPLAY_ROTATION=2`.
+**Acceptance [HW]: MET (2026-10-16).** The FT6336U is detected at `0x38` on the first
+attempt (`[TOUCH] 0x38 ft5x06 OK (retry 0)`), and taps land exactly where they are pressed.
+
+Note the rotation here is `DISPLAY_ROTATION=1`, **not 2** — on this natively portrait
+320x480 panel, rotations 0/2 are portrait and 1/3 are landscape, and 1 == MADCTL 0x20 is
+MEASURED correct. `s_ui_rotation` is also pinned to `LV_DISP_ROT_90`, because a persisted
+preference otherwise overrides `DEFAULT_UI_ROTATION` and `CAP_ROTATABLE=0` means the UI
+cannot change it back. Both pins are load-bearing for the touch mapping above; if either is
+removed, the flips must be re-derived.
 
 ---
 
@@ -380,17 +407,23 @@ SPI peripheral. DAT1/DAT2 are unconnected, so **4-bit SDIO is physically impossi
 (`SD.begin(SD_CS, fspi)`). Do **not** use `SD_MMC` — that applies to the
 *ESP32-S3-Touch-LCD-3.5* board, not this module.
 
-1. Add `PIN_SD_CS=17`. ⚠️ **There is no MISO to enable** — the panel is 4-wire
+1. Add `PIN_SD_CS=17`. **There is no MISO to enable** - the panel is 4-wire
    write-only, so `TFT_MISO=-1` stays and `SD.begin()` cannot read the CSD over this
-   bus. `CAP_SD=0` is currently blocked on that *and* on the GPIO38 overvoltage.
-2. Set `CAP_SD=1` at `src/ui-touch/device_caps.h:139`. ⚠️ Same voltage hold as touch.
+   bus. NOTE: the TF slot does have its own MISO (GPIO 18) per the schematic, so the
+   card path can read even though the LCD path cannot - but they share the net, which
+   is exactly why step 5 matters.
+   The GPIO38 overvoltage that blocked `CAP_SD` alongside touch is RESOLVED (CardKB on
+   3.3 V), so SD is no longer held for a safety reason.
+2. Set `CAP_SD=1` at `src/ui-touch/device_caps.h:139`. **No longer blocked.** The same
+   GPIO38 overvoltage that held touch was the only safety reason for `CAP_SD=0`, and it
+   is resolved. What remains is ordinary bring-up risk, not an electrical hazard.
 3. **Init order is a vendor requirement:** Waveshare's demo states *"SD card
    initialization must be placed after the LCD."* Mount SD only after the panel is up.
-4. **Drop the SD clock to ≤20 MHz.** The bus is 20 MHz MEASURED for the LCD — already
-   capped by the dupont wiring, see root cause #2 — and far too fast for a card.
-   Interleaving high-speed LCD DMA fills with card reads is the classic
-   failure here. `include/SdFastClock.h` exists as a precedent for *raising* it
-   deliberately, so the inverse is safe.
+4. **Keep the SD clock well below the LCD clock.** The shared bus runs at 40 MHz
+   MEASURED for the LCD - already capped by the dupont wiring, see root cause #2 -
+   and far too fast for a card. Interleaving high-speed LCD DMA fills with card
+   reads is the classic failure here. `include/SdFastClock.h` exists as a precedent
+   for *raising* it deliberately, so the inverse is safe.
 5. **Keep `LCD_CS` rigorously de-asserted between transactions.** If it idles low, the
    ST7796 drives `MISO` against the card during SD reads.
 6. **Fix the one known gap:** `fmIsSd()` (`UITask.cpp:23727`) notes *"Heltec V4 ST7796
@@ -403,6 +436,15 @@ the volume, LCD unaffected throughout.
 ---
 
 ## Phase 4 — UI and LoRa verification (item 4)
+
+**Status: DONE (2026-10-16).** Verified on hardware: the full UI renders and is
+touch-navigable, and LoRa **RX is confirmed** - messages arrive from a second node and
+appear in the chat view. Goal 4 is complete.
+
+**Not yet confirmed:** LoRa **TX** end-to-end, and companion-web reachability
+(`MULTI_TRANSPORT_COMPANION=1`). Neither blocks goal 4 as scoped; both are worth a pass
+if the companion link is needed. Wi-Fi/BLE is still disabled, and the log still shows
+`addApbChangeCallback(): duplicate func` (PHY double-init) whenever it is enabled.
 
 Walk every tab — Chats, Contacts, Home, Map, Sensors, Settings — with touch live. Tab
 registry `src/ui-touch/UITask.cpp:2280-2302`; sensors tab is conditional on
