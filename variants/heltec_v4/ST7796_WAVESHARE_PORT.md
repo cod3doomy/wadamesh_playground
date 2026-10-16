@@ -91,19 +91,33 @@ over dupont jumper leads:
 
 | `SPI_FREQUENCY` | Result |
 |---|---|
-| 40 MHz | **Garbled** — 4 of the first boots after every flash erase |
+| 40 MHz | **Clean 8/8** from a freshly erased flash, post-cleanup. **CURRENT VALUE** |
 | 20 MHz | **Clean 8/8** from a freshly erased flash, animated background enabled |
 | 8 MHz | Clean 8/8 |
+| 40 MHz (earlier session) | **Garbled** - 4 of the first boots after every flash erase |
 
-`SPI_FREQUENCY=20000000` is the current value. The key evidence that this is *timing*
-and not memory state: **seven consecutive boots produced byte-identical
-`psram_free`, `nvs_free_entries` and LVGL configuration whether they rendered
-correctly or garbled.** Identical state, different output ⇒ the discriminator is on
-the wire, not in RAM.
+`SPI_FREQUENCY=40000000` is the current value, verified over 8+ reboots with the full
+UI, touch, CardKB and LoRa RX all live simultaneously.
 
-⇒ Very likely a **wiring** limit, not a chip limit. Short, hard-soldered display leads
-should permit considerably more. **Re-test the clock after rework** — do not treat
-20 MHz as a permanent ceiling.
+**The "40 MHz garbles the display" row is RETRACTED as a causal claim.** It was inferred,
+not proven. The bad episode and the good ones differed in **three variables at once** -
+SPI clock, animated background on/off, and the `s_ui_rotation` pin - so the clock was
+never isolated as the cause. Every measurement after the aurora/rotation cleanup came
+back clean at 40 MHz.
+
+One tell remains genuinely unexplained and is the strongest clue left: a 40 MHz splash
+took **4440 ms** against **3811 ms** at 8 MHz, i.e. *slower* at the higher clock. That is
+not what a marginal link does, and it is why the timing theory was never accepted.
+**Treat the garbling cause as OPEN**, not as clock marginality.
+
+Very likely a **wiring** limit, not a chip limit - or possibly not a digital-timing
+fault at all. Short, hard-soldered display leads should permit considerably more.
+**Re-test the clock after rework.**
+
+**Test protocol this investigation proved necessary (it was fooled twice without it):**
+erase the flash **first**, then run 8+ reboots. The fault had a persistence effect - bad
+on the early boots, then good and staying good - so without an erase the result is a
+false pass.
 
 ### Other findings
 
@@ -125,13 +139,17 @@ should permit considerably more. **Re-test the clock after rework** — do not t
 referenced to **VCC, not 3V3**. With VCC on 5 V this drove **GPIO38 to 4.23 V**,
 against the ESP32-S3's **3.6 V absolute maximum**. ESP32-S3 GPIOs are not 5V-tolerant.
 
-⇒ Both `CAP_TOUCH=0` and `CAP_SD=0` in `src/ui-touch/device_caps.h` are deliberate
-and must stay until the bus is fixed. The touch controller *is* present and *does*
-ACK at `0x38` — it is disabled purely on voltage grounds.
+Both `CAP_TOUCH` and `CAP_SD` in `src/ui-touch/device_caps.h` were originally held at 0
+as a deliberate voltage safety hold. **Touch has since been enabled and verified**
+(`CAP_TOUCH=1`, commit `08f7fda`); `CAP_SD` is still 0 and is now only ordinary bring-up
+risk, not an electrical hazard. The hold was lifted in hardware: the CardKB was moved to
+3.3 V, so all SDA/SCL now measure 3.3 V against the 3.6 V absolute maximum. The touch
+controller was present and ACKing at `0x38` the whole time - it was disabled purely on
+voltage grounds, and that ground no longer applies.
 
-**Before re-enabling either:** level-shift the bus, or re-terminate the pull-ups to
-3V3. Re-measure GPIO38 at idle *with the bus loaded* before assuming it is fixed.
-The panel's `3V3` pin is a *regulated output* — do **not** tie it to the V4's 3.3 V rail.
+Before enabling SD, re-measure GPIO38 at idle *with the bus loaded* rather than assuming
+it is fixed. The panel's `3V3` pin is a *regulated output* - do **not** tie it to the
+V4's 3.3 V rail.
 
 ### Firmware bugs found and fixed on the way
 
@@ -317,20 +335,26 @@ address `0x38`, already implementing the full 13-function `HeltecV4CapTouch` con
    (`platformio.ini:459-470`) once only the FT5x06 driver compiles — otherwise two files
    define the same symbols.
 2. **Re-target geometry.** `RAW_W=240 / RAW_H=320` (`:43-44`) must become the panel's
-   native **320×480 portrait**, then map to 480×320 landscape for `DISPLAY_ROTATION=2`.
-   The FT6336U reports in native portrait with the **y origin at the FPC end**, and the
-   ST7796 has no rotation register — so this is 100% host-side math and is the one
-   genuinely novel code in the project. `RAK_TS_FLIP_X`/`RAK_TS_FLIP_Y` do not carry over.
-3. **Point at the board bus** — SDA=38 / SCL=4 on **I2C0 (`Wire`)**, alongside the
-   environment sensors. ⚠️ **This phase is on HOLD, not done.** The panel's I2C pull-ups
-   are referenced to VCC and drive GPIO38 to ~4.23 V against a 3.6 V absolute maximum.
-   See "STILL OPEN" above. The driver already uses `Wire`, so wiring it up later is
-   small — but do **not** let it re-route `Wire`, or the sensors drop off.
-4. **Init timing — the chip NACKs for ~300 ms after reset** (`Trsi`, datasheet Table 3-5).
-   The current 3-attempt retry (`RakTapV2Touch.cpp:110-115`) is not enough on a cold
-   boot. Use the Waveshare sequence: 200 ms low, then ≥300 ms before first I²C. Do **not**
-   copy Waveshare's ESP-IDF component, which uses 10/10 ms — that only works because
-   their carrier board is already warm.
+   native **320x480 portrait**, then map to 480x320 landscape. The FT6336U reports in
+   native portrait with the **y origin at the FPC end**, and the ST7796 has no rotation
+   register - so this is 100% host-side math and is the one genuinely novel code in the
+   project. Note the rotation is `DISPLAY_ROTATION=1`, not 2: on this natively portrait
+   panel, 0/2 are portrait and 1/3 are landscape.
+   `RAK_TS_FLIP_X`/`RAK_TS_FLIP_Y` do carry over, and **both were needed**: with geometry
+   corrected, the top of the UI selected the bottom (`RAK_TS_FLIP_Y`) and X was still
+   mirrored - together a 180 degree rotation (`RAK_TS_FLIP_X`). The wrong geometry
+   *masked* the rotation, so the order was not optional.
+3. **Point at the board bus** - SDA=38 / SCL=4 on **I2C0 (`Wire`)**, alongside the
+   environment sensors. **DONE** (commit `08f7fda`): the FT6336U initialises at `0x38` on
+   the first attempt and taps land where they are pressed. The GPIO38 overvoltage that put
+   this on hold is resolved (CardKB on 3.3 V). The split-bus decision below means the
+   driver uses `Wire` for touch only and does **not** re-route it, so the sensors are
+   unaffected - that part of the original caution still holds and should stay true.
+4. **Init timing - the chip NACKs for ~300 ms after reset** (`Trsi`, datasheet Table 3-5).
+   The 3-attempt retry in `RakTapV2Touch.cpp` is adequate in practice - it succeeded on
+   attempt 0 on every boot - but a cold boot may need the Waveshare sequence: 200 ms low,
+   then ~300 ms before first I2C. Do **not** copy Waveshare's ESP-IDF component, which
+   uses 10/10 ms - that only works because their carrier board is already warm.
 5. **Monitor mode.** `CTRL(0x86)=0x01` by default auto-drops the chip to Monitor after
    ~10 idle units, and *"during this mode the serial port is closed."* Write
    `0xA5 PWR_MODE = 0x01` (Active) before any read, or expect NACKs/garbage at `0x38`.
@@ -505,21 +529,33 @@ Steps:
 
 ## Open items, in risk order
 
-1. **Panel I2C overvoltage on GPIO38 (4.23 V vs 3.6 V abs max)** — blocks *both* touch
-   and SD. Needs level shifting or re-termination to 3V3. **This is the top blocker.**
-   **[HW]**
-2. **CardKB 5V pull-up over-voltage** — pick an option in 0.2 before wiring. **[HW]**
-3. **Re-test the SPI clock after wiring rework** — 20 MHz is measured-good on dupont
-   jumpers, not a proven ceiling. Short soldered leads should go higher. **[HW]**
-4. **SD is blocked on MISO, not just voltage** — the panel is 4-wire write-only, so
-   `SD.begin()` cannot read the CSD on SPI3 as wired. Revisit the topology. **[HW]**
-5. **GPIO38 GNSS collision** — verify the GNSS header is unpopulated. **[HW]**
-6. **TXS0108E contention** — designed around by the split-bus decision; revisit only if
-   the split bus proves impractical.
 
-Closed: the flash budget (measured 64.3%, ~2.1 MB free — the old 99.7% figure was
-stale and is now corrected in `platformio.ini`), and the boot loop itself (PSRAM CS on
-the panel reset line, see root cause #1).
+1. **SD bring-up** - the only disabled feature left (`CAP_SD=0`). Needs `PIN_SD_CS=17`,
+   mount-after-LCD init order, and an SD clock well below the 40 MHz LCD clock. Mount and
+   prove only - no log persistence, no tile backend. **[HW]**
+2. **SD MISO topology** - the LCD path is 4-wire write-only, so `TFT_MISO=-1` stays; the
+   TF slot has its own MISO (GPIO 18) but shares the net. Confirm `SD.begin()` can read the
+   CSD, and that `LCD_CS` is rigorously de-asserted between transactions or the ST7796
+   drives MISO against the card. **[HW]**
+3. **Re-measure GPIO38 under load** before enabling SD. The overvoltage that used to be the
+   top blocker is resolved (CardKB on 3.3 V, all lines now 3.3 V), but confirm it with the
+   bus loaded rather than idle. **[HW]**
+4. **Re-test the SPI clock after wiring rework** - 40 MHz is clean 8/8 on dupont jumpers,
+   not a proven ceiling. Short soldered leads should go higher. The *cause* of the old
+   garbling is still unknown, so re-test after rework. **[HW]**
+5. **GPIO38 GNSS collision** - verify the GNSS header is unpopulated (`PIN_GPS_RX=38` and
+   `PIN_BOARD_SDA=38` claim the same pad). **[HW]**
+6. **TXS0108E contention** - designed around by the split-bus decision; revisit only if
+   the split bus proves impractical.
+7. **`ARDUINO_USB_MODE=1` is still set and marked bring-up-only** - reverting drops
+   TinyUSB `PID_0002` and with it CDC serial, which is the only diagnostic channel used
+   throughout this bring-up. Decide before the port is called finished.
+8. **Wi-Fi/BLE PHY double-init** - `addApbChangeCallback(): duplicate func` appears
+   whenever Wi-Fi/BLE is enabled. Unresolved; Wi-Fi/BLE is currently disabled.
+
+Closed: the flash budget (measured 64.5%, ~2.1 MB free - the old 99.7% figure was stale
+and is corrected in `platformio.ini`), the boot loop (PSRAM CS on the panel reset line,
+root cause #1), touch (commit `08f7fda`), the CardKB bus, and goal 4 (UI + LoRa RX).
 
 ## Explicitly unconfirmed
 
