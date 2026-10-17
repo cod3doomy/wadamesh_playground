@@ -47,6 +47,39 @@ bool St7796WaveshareDisplay::begin() {
     // SX1262 on this board).
     display.init();
 
+#if defined(HELTEC_LORA_V4_ST7796) && (TFT_MISO >= 0)
+    // ROOT CAUSE of "SPI3's MISO is not GPIO18" (fixed 2026-10-16) -- re-asserted
+    // here as a belt-and-braces guard. The permanent fix is in target.cpp, where
+    // the LoRa's SPIClass is now bound to FSPI (SPI2) instead of the default
+    // ctor arg (which is HSPI == SPI3 on ESP32-S3, colliding with this bus). This
+    // block exists so that GPIO18 is provably attached to SPI3's MISO right after
+    // the panel comes up, whatever else has touched the pin matrix.
+    //
+    // Why it was broken: TFT_eSPI's own spi.begin(47, 18, 48, -1) DID run
+    // spiAttachMISO(spi, 18) -> pinMatrixInAttach(18, SPI3_Q_OUT_IDX). But
+    // SPIClass::begin()'s `if (_spi) return;` guard is per OBJECT, not per HOST,
+    // so a SECOND SPIClass object on the same SPI3 host re-attached the matrix
+    // with its own MISO (the LoRa's GPIO11) and silently took the signal away.
+    // Nothing in the pin-matrix API complains about that: gpio_matrix_in()
+    // overwrites in1[pad], and the SPI peripheral's signal simply follows the
+    // pad that now owns it.
+    //
+    // bus() is the PUBLIC accessor for the spi_t* (SPI.h line 91); _spi is
+    // private. spiAttachMISO() is the same esp32-hal-spi.c entry point
+    // SPIClass::begin() itself uses, so this is exactly the attach that was
+    // stolen -- re-run with the pin we actually mean. It is idempotent, touches
+    // only GPIO18's direction + matrix-in slot, and cannot disturb SCK/MOSI/CS.
+    {
+      SPIClass& bus = display.getSPIinstance();   // the shared SPI3 SPIClass
+      spi_t* bus_handle = bus.bus();
+      if (bus_handle) {
+        spiAttachMISO(bus_handle, TFT_MISO);
+      }
+      Serial.printf("[DISP] SPI3 MISO re-attached to GPIO%d (handle=%s)\n",
+                    (int)TFT_MISO, bus_handle ? "ok" : "NULL");
+    }
+#endif
+
     // MANDATORY: this panel outputs the bitwise complement of every colour.
     // TFT_eSPI's generic ST7796_Init.h never sends an inversion command
     // (0x20/0x21) at all, so without this the whole UI renders inverted

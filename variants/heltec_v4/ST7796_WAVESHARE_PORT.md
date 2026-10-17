@@ -301,6 +301,37 @@ this correctly; it is this document that discarded it. One flag serves both uses
 register readback starts working *and* the card becomes readable. Phase 3 step 1 owns
 the detail.
 
+### ⚠️ `TFT_MISO=18` alone was NOT enough — SPI3's MISO was being stolen (2026-10-16)
+
+With `TFT_MISO=18` in place the card still failed (`sdSelectCard(): Select Failed`, raw
+CMD0 R1 = `0x00`, and the `[MISOLOOP]` diagnostic returned `0x00` no matter what GPIO18
+was driven to). The cause was **not** the flag, and **not** `SPIClass::begin()`'s
+`if(_spi){return;}` short-circuit:
+
+* On ESP32-S3, arduino-esp32 2.x numbers the hosts **`HSPI = 1` (SPI3) and `FSPI = 0`
+  (SPI2)** — the opposite ordering to the classic ESP32. Verified by preprocessing this
+  env (`#pragma message`), and `cores/esp32/esp32-hal-spi.h:28-30` confirms it.
+* `SPIClass`'s constructor default is **`SPIClass(uint8_t spi_bus = HSPI)`**, *not*
+  `FSPI`. So `static SPIClass spi;` in `target.cpp` — documented here and in
+  `platformio.ini` as "the default ctor arg = FSPI = real SPI2" — was in fact **SPI3**,
+  the same host `-D USE_HSPI_PORT=1` gives TFT_eSPI.
+* `SPIClass::begin()`'s `if(_spi){return;}` guard is **per OBJECT, not per HOST**. So the
+  radio's own `spi->begin(9, 11, 10)` (inside `CustomSX1262::std_init`, reached from
+  `radio_init()`, which runs *after* `display.begin()` in `setup()`) did **not**
+  short-circuit — it ran `spiAttachMISO(_spi, 11)` and executed
+  `pinMatrixInAttach(11, SPI3_Q_OUT_IDX)`, overwriting the `in1[]` slot that
+  `pinMatrixInAttach(18, SPI3_Q_OUT_IDX)` had just set. **SPI3 went on sampling GPIO11.**
+* The GPIO matrix raises no error for this: it is "last writer wins" per signal, so the
+  panel and SD silently inherited the radio's MISO pin.
+
+⇒ **Fixed (2026-10-16):** `target.cpp` now constructs the radio's bus as
+`SPIClass(FSPI)` for `HELTEC_LORA_V4_ST7796` (LoRa owns SPI2 alone; SPI3 is exclusively
+the ST7796 + TF slot, as this document always claimed), and
+`St7796WaveshareDisplay::begin()` additionally re-asserts
+`spiAttachMISO(TFT_eSPI::getSPIinstance().bus(), TFT_MISO)` straight after `display.init()`.
+Neither `SPI_FREQUENCY`, `DISPLAY_ROTATION`, `PIN_TFT_RST`, `PIN_SD_CS`, `TFT_MISO`,
+`CAP_TOUCH` nor `CAP_SD` changed.
+
 ⚠️ **GPIO18 is no longer an unproven precondition — it is CONFIRMED (2026-10-16).**
 The claim that the TF slot's MISO lands on GPIO18 came from a comment transcribing the
 module schematic; the user has now **measured it and confirmed GPIO18**. GPIO18 still
