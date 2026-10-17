@@ -1,12 +1,15 @@
 # Heltec V4-R2 + Waveshare 3.5" capacitive-touch LCD — bring-up findings
 
-**Status: WORKING.** Display, touch, radio RX and CardKB verified on real hardware
-(2026-10-16). Touch is enabled and verified; SD is now enabled in firmware and builds,
-but is **not yet proven on hardware** — see Phase 3. Two caveats are carried as open
-items and **neither contradicts this status**:
-Wi-Fi/BLE PHY double-init warning is unresolved with Wi-Fi/BLE itself disabled, and
-companion-*web* reachability is **not** among the verified items. `ARDUINO_USB_MODE=1`
-is a deliberate permanent setting, not an outstanding item - see open item 8.
+**Status: ALL FIVE BRING-UP GOALS COMPLETE (2026-10-16).** Flash, display + touch,
+UI + LoRa RX and CardKB are verified on real hardware, and the SD card now MOUNTS with
+its capacity reported in System -> About. Build: 65.6% flash (4,043,877 / 6,160,384),
+8.3% RAM, single clean boot, no resets.
+
+Known-open, none blocking the port: the garbled-UI root cause is still unexplained
+(40 MHz is stable, but never diagnosed); Wi-Fi/BLE carries a PHY double-init warning and
+is disabled; companion-*web* reachability is unverified; `ARDUINO_USB_MODE=1` is a
+deliberate permanent setting. The final two-goal blockers were hardware, not firmware:
+a loose wire and an ESP32-S3 SPI host-numbering surprise - see Phase 3 and target.cpp.
 Panel identity confirmed as Waveshare SKU **29318**, `3.5inch Capacitive Touch LCD`
 (ST7796S + FT6336U + TF slot). Items still requiring hardware are marked **[HW]**.
 
