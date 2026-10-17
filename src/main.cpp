@@ -60,12 +60,18 @@ static uint32_t _atoi(const char* sp) {
     #include <SD_MMC.h>
     #include <WioTrackerL2Io.h>
   #endif
-  #if defined(HAS_TDECK_GT911) || defined(HAS_TDECK_PRO) || defined(HELTEC_LORA_V4_R8) || defined(TLORA_PAGER) || defined(HAS_THINKNODE_M9) || defined(HAS_CROWPANEL_35)
+  #if defined(HAS_TDECK_GT911) || defined(HAS_TDECK_PRO) || defined(HELTEC_LORA_V4_R8) || defined(TLORA_PAGER) || defined(HAS_THINKNODE_M9) || defined(HAS_CROWPANEL_35) || defined(HELTEC_LORA_V4_ST7796)
     #if defined(HAS_CROWPANEL_35)
     #include <CrowPanel35SD.h>
     #else
     #include <SD.h>
     #include "SdFastClock.h"   // post-mount operating-clock raise (SD_SPI_FAST_HZ boards)
+    #endif
+    #if defined(HELTEC_LORA_V4_ST7796)
+    // The TF slot shares SPI3 with the ST7796, so SD must be handed the SAME
+    // SPIClass object TFT_eSPI drives -- TFT_eSPI::getSPIinstance() is that object,
+    // and it is what TFT_eSPI's own SD example passes to SD.begin().
+    #include <TFT_eSPI.h>
     #endif
     #include <Preferences.h>
     #if defined(TLORA_PAGER)
@@ -298,7 +304,7 @@ extern volatile uint8_t g_wifi_last_disc_reason;
 
 #include "esp_task_wdt.h"   // task-watchdog reconfigure — see setup() (GH #56)
 
-#if defined(HAS_TDECK_GT911) || defined(HAS_TDECK_PRO) || defined(HELTEC_LORA_V4_R8) || defined(TLORA_PAGER) || defined(HAS_THINKNODE_M9) || defined(HAS_CROWPANEL_35)
+#if defined(HAS_TDECK_GT911) || defined(HAS_TDECK_PRO) || defined(HELTEC_LORA_V4_R8) || defined(TLORA_PAGER) || defined(HAS_THINKNODE_M9) || defined(HAS_CROWPANEL_35) || defined(HELTEC_LORA_V4_ST7796)
 // ---- SPIFFS -> SD migration (fixes the beta_36 "lost my profile" upgrades) ----
 // Users who flipped "Store data on SD" before beta_36 ran with the toggle IGNORED
 // (the flag never survived a reboot), so their identity/prefs/contacts kept living
@@ -1427,7 +1433,7 @@ void setup() {
     Serial.println("[BOOT] wio-l2 SD_MMC unavailable; using SPIFFS");
   }
 #endif
-#if defined(HAS_TDECK_GT911) || defined(HAS_TDECK_PRO) || defined(HELTEC_LORA_V4_R8) || defined(TLORA_PAGER) || defined(HAS_THINKNODE_M9) || defined(HAS_CROWPANEL_35)
+#if defined(HAS_TDECK_GT911) || defined(HAS_TDECK_PRO) || defined(HELTEC_LORA_V4_R8) || defined(TLORA_PAGER) || defined(HAS_THINKNODE_M9) || defined(HAS_CROWPANEL_35) || defined(HELTEC_LORA_V4_ST7796)
   {
    #if !defined(HAS_CROWPANEL_35)
    #if defined(TLORA_PAGER)
@@ -1436,6 +1442,11 @@ void setup() {
     extern SPIClass* heltecV4R8SharedSPI();   // FSPI, shared with the TFT (CS=3)
    #elif defined(HAS_THINKNODE_M9)
     extern SPIClass* m9SharedSPI();           // radio/display/SD shared bus
+   #elif defined(HELTEC_LORA_V4_ST7796)
+    // No extern accessor on this target: the TF slot shares the display's own SPI3
+    // object, which is reached via TFT_eSPI::getSPIinstance() below. The #else arm
+    // (tdeckSharedSPI) is the SX1262 RADIO bus -- wrong bus, and not a real symbol here.
+    SPIClass* _spi = nullptr;
    #else
     extern SPIClass* tdeckSharedSPI();        // LoRa SPI bus
    #endif
@@ -1469,6 +1480,10 @@ void setup() {
     SPIClass* _spi = heltecV4R8SharedSPI();
    #elif defined(HAS_THINKNODE_M9)
     SPIClass* _spi = m9SharedSPI();
+   #elif defined(HELTEC_LORA_V4_ST7796)
+    _spi = &TFT_eSPI::getSPIinstance();   // SPI3, shared with the ST7796 (CS=33).
+                                         // getSPIinstance() returns a REFERENCE, so the
+                                         // handle has to be taken by address.
    #else
     SPIClass* _spi = tdeckSharedSPI();
    #endif
@@ -1524,6 +1539,46 @@ void setup() {
       Serial.printf("[BOOT] SD mount: %s\n", sd_mounted ? "ok" : "failed");
     }
     sdMountDiagSetMounted(sd_mounted, sd_mounted ? 4000000 : 0);
+#elif defined(HELTEC_LORA_V4_ST7796)
+    // Waveshare 3.5" TF slot on the ST7796's own SPI3 (CS=17). Mirrors the pager:
+    // one shot at the conservative 4 MHz on the display's already-running SPIClass,
+    // no ladder and no teardown of the shared bus the panel is using.
+    //
+    // LCD_CS (GPIO33) discipline: the panel and the card are on the SAME bus, and
+    // parking PIN_SD_CS HIGH only de-asserts the CARD -- it does nothing for the
+    // DISPLAY. If TFT_CS idles low the ST7796 drives MISO against the card for the
+    // whole of every SD read. Nothing else in this build owns that pad, so assert it
+    // here, before the first card transaction.
+    //
+    // ⚠️ OPEN: TFT_eSPI is NOT reentrant, and SPIClass::beginTransaction() overwrites
+    // the shared clock divider -- an SD transaction therefore also changes the
+    // display's clock, and a display push issued inside a card transaction inherits
+    // the card's 4 MHz. The other boards solve this with a mutex around both sides;
+    // this env has none. SD transactions must not overlap display transactions until
+    // that locking exists. Not implemented here (out of scope).
+    digitalWrite(TFT_CS, HIGH);
+    sdMountDiagBegin();
+    if (!_spi) {
+      Serial.println("[BOOT] SD: shared SPI unavailable");
+    } else {
+      // NOTE: no board.sdCardPresent() gate here. That accessor exists only on the
+      // pager and the Wio Tracker, and this panel's TF slot has no card-detect line
+      // at all -- TF-07F CD/DAT3 is the card's CHIP SELECT (SD_CS), not a detect
+      // switch. Presence is discovered by the mount itself.
+      Serial.println("[BOOT] SD: mounting TF slot at 4 MHz on the shared display SPI");
+      bool sd_begin_ok = SD.begin(PIN_SD_CS, *_spi, 4000000, "/sd", 6);
+      sd_mounted = sd_begin_ok && SD.cardType() != CARD_NONE;
+      sdMountDiagAttempt(4000000, sd_begin_ok, sd_mounted);
+      if (!sd_mounted && sd_begin_ok) SD.end();
+      // Keep the board bring-up invariant explicit even if the SD library moved the
+      // pin while unwinding a failed mount (same discipline as the pager arm above).
+      pinMode(PIN_SD_CS, OUTPUT);
+      digitalWrite(PIN_SD_CS, HIGH);
+      digitalWrite(TFT_CS, HIGH);   // display must stay de-asserted on the shared bus
+      Serial.printf("[BOOT] SD mount: %s\n", sd_mounted ? "ok" : "failed");
+    }
+    sdMountDiagSetMounted(sd_mounted, sd_mounted ? 4000000 : 0);
+    if (sd_mounted) { extern uint32_t g_sd_operating_hz; g_sd_operating_hz = 4000000; }
 #else
     sdMountDiagBegin();
     uint32_t mounted_hz = 0;
@@ -1782,7 +1837,7 @@ void setup() {
   #if defined(HAS_WIO_TRACKER_L2)
     SdNvsPrefs::useFile(sd_storage ? (fs::FS*)&SD_MMC : (fs::FS*)&SPIFFS,
                         sd_storage ? "/meshcomod" : "/prefs");
-  #elif defined(HAS_TDECK_GT911) || defined(HAS_TDECK_PRO) || defined(HELTEC_LORA_V4_R8) || defined(TLORA_PAGER) || defined(HAS_THINKNODE_M9) || defined(HAS_CROWPANEL_35)
+  #elif defined(HAS_TDECK_GT911) || defined(HAS_TDECK_PRO) || defined(HELTEC_LORA_V4_R8) || defined(TLORA_PAGER) || defined(HAS_THINKNODE_M9) || defined(HAS_CROWPANEL_35) || defined(HELTEC_LORA_V4_ST7796)
     SdNvsPrefs::useFile(sd_storage ? (fs::FS*)&SD : (fs::FS*)&SPIFFS,
                         sd_storage ? "/meshcomod" : "/prefs");
   #else

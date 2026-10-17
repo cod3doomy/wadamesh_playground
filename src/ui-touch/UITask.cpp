@@ -75,8 +75,11 @@ static void* wadaMp3Scratch() { return s_wada_mp3_scratch; }
 #endif
 #if defined(HAS_CROWPANEL_35)
   #include <CrowPanel35SD.h>
-#elif defined(HAS_TDECK_GT911) || defined(HAS_TDECK_PRO) || defined(HAS_THINKNODE_M9) || defined(HELTEC_LORA_V4_R8)
-  #include <SD.h>             // microSD — T-Deck/M9 on the LoRa SPI, V4-R8 on the TFT SPI
+#elif defined(HAS_TDECK_GT911) || defined(HAS_TDECK_PRO) || defined(HAS_THINKNODE_M9) || defined(HELTEC_LORA_V4_R8) || defined(HELTEC_LORA_V4_ST7796)
+  #include <SD.h>             // microSD — T-Deck/M9 on the LoRa SPI, V4-R8/Waveshare TF on the TFT SPI
+  #if defined(HELTEC_LORA_V4_ST7796)
+    #include <TFT_eSPI.h>     // sdSharedSPI() -> TFT_eSPI::getSPIinstance() (SPI3, shared with the ST7796)
+  #endif
   #include "SdFastClock.h"    // post-mount operating-clock raise (SD_SPI_FAST_HZ boards)
   #include "sd_diskio.h"      // internal Arduino-SD drive helpers (sdcard_init / sd_*_raw)
   extern SPIClass* tdeckSharedSPI();
@@ -25243,6 +25246,11 @@ static inline SPIClass* sdSharedSPI() { return tloraPagerSharedSPI(); }
 static inline SPIClass* sdSharedSPI() { return heltecV4R8SharedSPI(); }   // V4-R8: micro-SD shares the TFT FSPI bus (CS=3)
 #elif defined(HAS_THINKNODE_M9)
 static inline SPIClass* sdSharedSPI() { return m9SharedSPI(); }
+#elif defined(HELTEC_LORA_V4_ST7796)
+// Waveshare 3.5" TF slot: the card shares SPI3 with the ST7796, so the handle is
+// TFT_eSPI's own SPIClass (the #else arm, tdeckSharedSPI, is the SX1262 radio bus
+// and is not a real symbol on this target).
+static inline SPIClass* sdSharedSPI() { return &TFT_eSPI::getSPIinstance(); }
 #else
 static inline SPIClass* sdSharedSPI() { return tdeckSharedSPI(); }
 #endif

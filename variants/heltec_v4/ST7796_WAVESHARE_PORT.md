@@ -1,8 +1,9 @@
 # Heltec V4-R2 + Waveshare 3.5" capacitive-touch LCD — bring-up findings
 
 **Status: WORKING.** Display, touch, radio RX and CardKB verified on real hardware
-(2026-10-16). Touch is now enabled and verified; SD remains the only disabled item.
-Two caveats are carried as open items and **neither contradicts this status**:
+(2026-10-16). Touch is enabled and verified; SD is now enabled in firmware and builds,
+but is **not yet proven on hardware** — see Phase 3. Two caveats are carried as open
+items and **neither contradicts this status**:
 Wi-Fi/BLE PHY double-init warning is unresolved with Wi-Fi/BLE itself disabled, and
 companion-*web* reachability is **not** among the verified items. `ARDUINO_USB_MODE=1`
 is a deliberate permanent setting, not an outstanding item - see open item 8.
@@ -145,7 +146,7 @@ false pass.
 |---|---|
 | **Build environment** | This repo cannot build when the Windows username contains a space: PlatformIO expands ~212 include flags under that home dir, SCons passes them unquoted, and every compile dies with `CreateProcess: No such file or directory`. The compiler itself is fine. Fixed with a `C:\pio` junction to `%USERPROFILE%\.platformio` plus `setx PLATFORMIO_CORE_DIR C:\pio`. Affects every PlatformIO project on the machine. |
 | **Flash headroom** | Measured **3,976,000 / 6,160,384 = 64.5%** of flash, ~2.1 MB free (post-touch build). The earlier **3,960,985 = 64.3%** figure was the *pre-touch* build and is stale. The `99.7%` claim in the env's flash-headroom comment in `platformio.ini` was **stale** too (written before `partitions_st7796.csv` widened the app slots). Corrected. |
-| **`TFT_MISO=-1`** | Correct **for the display register readback**: this is a **4-wire** panel, so reads fail closed and a readback returning `COLMOD=0xFF` is the tell — any "SPI readback" evidence collected through MISO on this build is meaningless. But it is **not** correct for the TF card, which `TFT_MISO=-1` makes deterministically unreadable. See Phase 3 step 1; SD needs `TFT_MISO=18`. |
+| **`TFT_MISO`** | **Now `18`, was `-1`.** `-1` is correct *only* for a display register readback on a **4-wire** panel, where reads fail closed and a readback returning `COLMOD=0xFF` is the tell — any "SPI readback" evidence collected through MISO under `-1` is meaningless. But `-1` makes the TF card **deterministically unreadable** (see 0.1: SD's argument-less `spi.begin()` is a no-op behind TFT_eSPI's, and `spiAttachMISO(_spi,-1)` attaches nothing on the S3, so GPIO18 never reaches SPI3 — and every SD init command is a read). **DONE**, see Phase 3 step 2. |
 | **Display geometry** | Declare the panel at its **NATIVE `TFT_WIDTH=320` / `TFT_HEIGHT=480`** and call **`setRotation(1)`**. Declaring it landscape and hand-writing MADCTL is wrong: TFT_eSPI caches its rotation state and desynchronises from the register, so the address window, the driver's assumed dimensions and the hardware all disagree. `setRotation()` keeps the cache and the register in step. |
 | **UI rotation pinning** | `s_ui_rotation` must be pinned to **`LV_DISP_ROT_90`** in `UITask.cpp`. It is a **persisted pref** that *overrides* `DEFAULT_UI_ROTATION`, and `device_caps.h` sets `CAP_ROTATABLE 0` for this target, so the UI offers no way to change it back. An unpinned value therefore sticks forever. |
 | **Pin map** | Verified by I2C scan: CardKB **ACK 0x5F** on GPIO15/16 and answers `requestFrom`; backlight responds on GPIO6. Panel touch bus is **0x38** on GPIO38/4 and is **live** — the FT6336U is driven and taps verified on it (see the overvoltage section: that issue is resolved). |
@@ -157,15 +158,16 @@ false pass.
 ### RESOLVED IN HARDWARE — the panel I2C pull-ups overvoltage
 
 **Resolved. It was why touch and SD were disabled; touch has since been enabled and
-verified, and `CAP_SD` is the only thing still at 0.** The original fault: the panel's
+verified, and `CAP_SD` has since been flipped to 1 (firmware builds; hardware proof
+outstanding — see Phase 3).** The original fault: the panel's
 I2C pull-ups are referenced to **VCC, not 3V3**. With VCC on 5 V this drove **GPIO38 to
 4.23 V**, against the ESP32-S3's **3.6 V absolute maximum**. ESP32-S3 GPIOs are not
 5V-tolerant.
 
 Both `CAP_TOUCH` and `CAP_SD` in `src/ui-touch/device_caps.h` were originally held at 0
 as a deliberate voltage safety hold. **Touch has since been enabled and verified**
-(`CAP_TOUCH=1`, commit `08f7fda`); `CAP_SD` is still 0 and is now only ordinary bring-up
-risk, not an electrical hazard. The hold was lifted in hardware: the CardKB was moved to
+(`CAP_TOUCH=1`, commit `08f7fda`); `CAP_SD` has since been enabled too (`CAP_SD=1`,
+2026-10-16) and is now only ordinary bring-up risk, not an electrical hazard. The hold was lifted in hardware: the CardKB was moved to
 3.3 V, so all SDA/SCL now measure 3.3 V against the 3.6 V absolute maximum. The touch
 controller was present and ACKing at `0x38` the whole time - it was disabled purely on
 voltage grounds, and that ground no longer applies.
@@ -202,7 +204,7 @@ whole `WADA_*` namespace was deleted — see root cause #1.)
 |---|---|
 | LCD driver | **DONE** — `variants/heltec_v4/St7796WaveshareDisplay.{h,cpp}`, MEASURED |
 | Touch driver | **DONE** - `src/helpers/input/RakTapV2Touch.cpp`, FT5x06 at `0x38`. Re-targeted, not written; tap placement verified on hardware |
-| SD support | **NEEDS REAL WORK** - `mapSdStorage()` + `fmIsSd()` ship on 8 other boards, but `HELTEC_LORA_V4_ST7796` is **not in that block's gate**, so this target compiles **none** of the mount path today. Needs a gate addition, a correct SPI handle and `TFT_MISO=18` — see Phase 3 |
+| SD support | **CODE DONE, NOT YET PROVEN [HW]** - `mapSdStorage()` + `fmIsSd()` ship on 8 other boards; `HELTEC_LORA_V4_ST7796` has now been added to that block's gate with its own `TFT_eSPI::getSPIinstance()` handle, alongside `TFT_MISO=18` and `CAP_SD=1`. Build verified 2026-10-16; the card round trip is still outstanding — see Phase 3 |
 | CardKB | **DONE** - `src/helpers/input/CardKbKeyboard.cpp`, 73 lines, protocol verified |
 
 ⇒ The project is porting and wiring, not development.
@@ -250,7 +252,7 @@ backlight — feeding it from a switched rail browns out unless firmware enables
 | 3 | GND | **GND** | |
 | 5 | MOSI | **48** | SPI3 |
 | 6 | SCLK | **47** | SPI3, **20 MHz** MEASURED |
-| 4 | MISO | *claimed GPIO18* | ⚠️ **UNVERIFIED** — see below. Needs `TFT_MISO=18` for SD |
+| 4 | MISO | **18** | ✅ **CONFIRMED BY MEASUREMENT** (user, 2026-10-16) — the TF slot's MISO lands on GPIO18. Needed for SD; see 0.1 |
 | 8 | LCD_CS | **33** | R2 only — one of five pads lost to R8 PSRAM |
 | 9 | LCD_DC | **21** | Heltec `OLED RST` — harmless, no OLED fitted |
 | 10 | LCD_RST | **3** | ⚠️ **NOT 26.** 26 is the PSRAM chip-select — see root cause #1 |
@@ -261,6 +263,13 @@ backlight — feeding it from a switched rail browns out unless firmware enables
 | 14 | TP_INT | *unconnected* | driver polls |
 | 15 | TP_RST | *unconnected* | power-on reset |
 
+⚠️ **Identify header signals by the connector silkscreen order, not by a pin number quoted
+elsewhere.** The 15-pin GH1.25 interface header, in physical order, is: 1 VCC, 2 3V3,
+3 GND, **4 MISO**, 5 MOSI, 6 SCLK, **7 SD_CS**, 8 LCD_CS, 9 LCD_D/C, 10 LCD_RST, 11 LCD_BL,
+12 TP_SDA, 13 TP_SCL, 14 TP_INT, 15 TP_RST. A research pass during the 2026-10-16 schematic
+session reported MISO as *"pin 6"*, which contradicts both the schematic and the
+silkscreen — that report is wrong. **MISO is the 4th signal.**
+
 **GPIO39 is also claimed, invisibly.** `PIN_TOUCH_INT` is undefined in this env, so
 `RakTapV2Touch.cpp` falls back to **39** and calls `pinMode(39, INPUT_PULLUP)` at
 driver init. GPIO39 is `PIN_GPS_TX`. It is not in the panel's FPC and not in the table
@@ -268,9 +277,10 @@ above, but it is a pad this build actively reconfigures — see the findings tab
 
 `17`/`18` confirmed as header pins by the user; they are unpopulated OLED pins per
 `variants/heltec_v4/pins_arduino.h:60-61`. ⇒ Safe to reuse, and GPIO21 working as
-`LCD_DC` independently proves no OLED is fitted. ⚠️ This confirms the *header pins are
-free* — it does **not** confirm that the TF slot's MISO is actually wired to GPIO18.
-That is a separate, unproven claim (see above).
+`LCD_DC` independently proves no OLED is fitted. That observation alone only proved the
+*header pins are free* — it did **not** prove the TF slot's MISO reaches GPIO18. That
+separate claim is now closed: the user has since **CONFIRMED GPIO18 by measurement**
+(2026-10-16). See below.
 
 **MISO is two separate questions, and conflating them is what broke Phase 3.**
 For the **display register readback**, the panel is effectively 4-wire write-only, so
@@ -291,11 +301,17 @@ this correctly; it is this document that discarded it. One flag serves both uses
 register readback starts working *and* the card becomes readable. Phase 3 step 1 owns
 the detail.
 
-⚠️ **But GPIO18 itself is an unproven hardware precondition.** The claim that the TF
-slot's MISO lands on GPIO18 comes from a comment transcribing the module schematic.
-GPIO18 appears in **no wiring-table row and in no build flag** in this repo, so nothing
-here can confirm it. Continuity-check it before starting SD work — if the wire is not
-there, no amount of firmware reaches the card.
+⚠️ **GPIO18 is no longer an unproven precondition — it is CONFIRMED (2026-10-16).**
+The claim that the TF slot's MISO lands on GPIO18 came from a comment transcribing the
+module schematic; the user has now **measured it and confirmed GPIO18**. GPIO18 still
+appears in no wiring-table row of the original bring-up notes, so the firmware side is
+where it had to be made real: `TFT_MISO=18` in the env (changed from `-1`), the
+`HELTEC_LORA_V4_ST7796` gate in `main.cpp`, and `CAP_SD=1`.
+
+The **card-side** half is now also read directly off the vendor schematic: socket pin 7
+(D0) reaches the `MISO` net by direct trace, with no series component and nothing in
+between. That routing is real but is **not** continuity-testable from an empty socket — see
+the TF socket subsection in Phase 3.
 
 ### 0.2 CardKB — separate bus, and the pull-up decision **[HW]**
 
@@ -489,42 +505,71 @@ SPI peripheral. DAT1/DAT2 are unconnected, so **4-bit SDIO is physically impossi
 **`TFT_eSPI::getSPIinstance()`**. That is the same object the ST7796 drives and the same
 one TFT_eSPI's own SD example passes to `SD.begin()`; there is no `fspi` symbol in this
 repo and an earlier revision of this document told the reader to pass one. Do **not**
-use `SD_MMC` — that applies to the *ESP32-S3-Touch-LCD-3.5* board, not this module.
+use `SD_MMC`.
+
+⚠️ **The reasoning this document gave for the `SD_MMC` ban was wrong; the conclusion is
+right.** It said `SD_MMC` *"does not apply"* on the grounds that it is a *different board*
+(the *ESP32-S3-Touch-LCD-3.5*). The correct statement is the one already given above the
+ban: `SD_MMC` is impossible **here** because DAT1/DAT2 are unconnected on this module's
+TF socket — a hardware reason, not a board-identity one. See the TF socket subsection below.
+
+**This is also what the vendor does.** Waveshare's demo for this module uses **SPI-mode SD
+over the shared bus**, not `SD_MMC`: `fspi.begin(SCLK, MISO, MOSI, -1)` then
+`SD.begin(SD_CS, fspi)`, with their own comment that SD init must come after LCD init.
+`LCD_CS` and `SD_CS` are separate host pins.
 
 ⚠️ **Three things below are prerequisites, not steps to discover the hard way.** Do them
 in this order or you will burn a hardware session.
 
-1. **Confirm GPIO18 actually reaches the TF slot's MISO.** **[HW]** Every SD fix below
-   rests on this, and it is the **one claim in this section that is not proven**. GPIO18
-   appears in **no wiring-table row and in no build flag** — the claim comes from a
-   comment in `platformio.ini` transcribing the module schematic, which is not evidence
-   you can test. Continuity-check the TF slot's MISO pad to the Heltec header pin you
-   intend to use before anything else. If it is not GPIO18 (or not broken out at all),
-   stop: there is no software fix for a missing wire.
-2. **Set `TFT_MISO=18`** (in the `TFT_MISO` build flag). With `TFT_MISO=-1` the card is
+1. ~~**Confirm GPIO18 actually reaches the TF slot's MISO.**~~ **[HW] RESOLVED
+   (2026-10-16)** — the user CONFIRMED GPIO18 **by measurement**. The firmware side
+   that this unblocked is **DONE**: `TFT_MISO=18` (was `-1`), `HELTEC_LORA_V4_ST7796`
+   added to the Arduino-SD gate in `main.cpp` with a `TFT_eSPI::getSPIinstance()`
+   handle, and `CAP_SD=1`. See steps 2-3 below and open item 1.
+2. ~~**Set `TFT_MISO=18`**~~ **DONE.** With `TFT_MISO=-1` the card is
    not "harder to read" — it is **deterministically unreadable**, as traced in 0.1:
    SD's argument-less `spi.begin()` is a no-op, nothing routes GPIO18 into SPI3, and
-   every init command is a read. The env's own comment already says `TFT_MISO=-1` is
+   every init command is a read. The env's own comment already said `TFT_MISO=-1` is
    wrong for this panel; that comment was right and this document was wrong to discard
-   it. `PIN_SD_CS=17` is **already set** in the env, and
+   it. The flag is now `-D TFT_MISO=18` in `platformio.ini` with the reasoning kept as
+   the comment above it. `PIN_SD_CS=17` is **already set** in the env, and
    `variants/heltec_v4/HeltecV4Board.cpp` already parks the pad HIGH before display init
    — that work is **done**, do not redo it.
-3. **Add `HELTEC_LORA_V4_ST7796` to the Arduino-SD gate in `main.cpp`, and give it its
-   own SPI handle.** `CAP_SD=1` **on its own compiles no mount code for this target.**
-   The whole `mapSdStorage()`/SD-mount block sits behind
+3. ~~**Add `HELTEC_LORA_V4_ST7796` to the Arduino-SD gate in `main.cpp`, and give it its
+   own SPI handle.**~~ **DONE.** `CAP_SD=1` **on its own compiles no mount code for this
+   target.** The whole `mapSdStorage()`/SD-mount block sits behind
    `#if defined(HAS_TDECK_GT911) || HAS_TDECK_PRO || HELTEC_LORA_V4_R8 || TLORA_PAGER ||
    HAS_THINKNODE_M9 || HAS_CROWPANEL_35`, and `HELTEC_LORA_V4_ST7796` is **not in that
    list**. Flipping the flag alone produces a build that still has no SD. And the
    existing `#else` arms there select **`tdeckSharedSPI()`** — the SX1262 **radio** bus
    (SCK 9 / MISO 11 / MOSI 10 / CS 8). That is the wrong bus *physically*, and on this
    target it is also an **undeclared symbol** — a link error. So the gate addition and a
-   correct handle are one change, not two:
-   `#elif defined(HELTEC_LORA_V4_ST7796)` → `SPIClass* _spi = TFT_eSPI::getSPIinstance();`
-   (declare it `extern` in the same style as the sibling arms), then
-   `CAP_SD=1` at `#define CAP_SD` in the ST7796 block of `src/ui-touch/device_caps.h`.
+   correct handle are one change, not two. Landed as:
+   `SPIClass* _spi = nullptr;` in the declaration chain's
+   `#elif defined(HELTEC_LORA_V4_ST7796)` arm, then
+   `_spi = &TFT_eSPI::getSPIinstance();` in the selection chain ahead of the `#else`
+   that picks `tdeckSharedSPI()`, then `CAP_SD=1` at `#define CAP_SD` in the ST7796
+   block of `src/ui-touch/device_caps.h`.
+
+   ⚠️ **`getSPIinstance()` returns a `SPIClass&`, not a pointer.** The handle has to
+   be taken **by address** — `&TFT_eSPI::getSPIinstance()` — otherwise the assignment
+   to `SPIClass*` does not compile. This correction is relative to the wording used
+   above when this step was written.
+
+   ⚠️ **`CAP_SD=1` opens more than `main.cpp`.** Flipping the capability also
+   compiles the file-manager SD path in `src/ui-touch/UITask.cpp`, which for this
+   target additionally needed `HELTEC_LORA_V4_ST7796` in two more gates: the
+   `#include <SD.h>` / `sd_diskio.h` / `PIN_SD_CS` block near the top of that file
+   (`SD`, `CARD_NONE` and `SdDriveAccess` are otherwise undeclared and it fails in
+   ~30 places), and the `sdSharedSPI()` accessor chain, whose `#else` arm is
+   `tdeckSharedSPI()`. `main.cpp` likewise needed the target in the SPIFFS→SD
+   migration block and in the `SdNvsPrefs::useFile()` routing arm. All four are
+   additive gate extensions — no existing board's behaviour changed.
 
 4. **Init order is a vendor requirement:** Waveshare's demo states *"SD card
-   initialization must be placed after the LCD."* Mount SD only after the panel is up.
+   initialization must be placed after the LCD."* Mount SD only after the panel is up. ⚠️ The
+   schematic makes this a hardware requirement rather than only a demo convention — see the
+   Q2 network in the TF socket subsection below, which is keyed off `LCD_CS`.
 5. **Keep the SD clock well below the LCD clock.** The shared bus runs at 40 MHz
    MEASURED for the LCD - and far too fast for a card. Interleaving high-speed LCD DMA
    fills with card reads is the classic failure here. `include/SdFastClock.h` exists as
@@ -538,18 +583,97 @@ in this order or you will burn a hardware session.
    and a display push issued inside a card transaction inherits the card's. A panel
    refresh during an SD write is the realistic interleaving. The known fix on the other
    boards is a mutex around both sides; **this env does not have one.** Decide on it
-   explicitly rather than discovering it as intermittent tearing.
+   explicitly rather than discovering it as intermittent tearing. **STILL OPEN** — the
+   mount branch in `main.cpp` documents the hazard at the call site, but locking was
+   explicitly left out of scope and is not implemented.
 7. **Keep `LCD_CS` (GPIO33) rigorously de-asserted between transactions.** If it idles
    low, the ST7796 drives `MISO` against the card during SD reads. ⚠️ Note that parking
    `PIN_SD_CS` HIGH is **not** the same thing — it de-asserts the *card*, not the
    *display*. Nothing in the current build guarantees `LCD_CS` is high while SD is
    talking, so this step needs an actual assertion (and TFT_eSPI must not be mid-push).
+   **PARTLY DONE:** `variants/heltec_v4/HeltecV4Board.cpp` does **not** touch GPIO33 —
+   the only existing parking there is `PIN_SD_CS`, the wrong pad — so the mount branch
+   in `main.cpp` now asserts `digitalWrite(TFT_CS, HIGH)` immediately before the card
+   transaction and again on the way out. That is a point-in-time assertion around the
+   mount, **not** a continuous guarantee, and it is correct only because the mount runs
+   after the panel is up (step 4) and not during a push. The runtime case — an SD write
+   overlapping a later panel refresh — is still unguarded, and belongs to item 6.
+
+   ⚠️ **Worse: the card's CS is not driven by `PIN_SD_CS` alone.** The R15/Q2 network below
+   ties the card CS to `LCD_CS`, so this step is not merely a tidiness requirement on this
+   module — see the TF socket subsection.
 8. **`fmIsSd()` is NOT a gap — do not edit it.** `UITask.cpp` already gates on
    `#if CAP_SD ... return fs == &SD;`, so setting `CAP_SD=1` selects the correct
    definition automatically. The *"Heltec V4 ST7796 has no Arduino SD global in FM
    path"* arm is simply the `#else` you are removing. Editing that line by hand would be
-   editing the wrong one.
+   editing the wrong one. **CONFIRMED** — that arm is no longer selected, and the
+   surrounding `UITask.cpp` gates did need extending (see the ⚠️ note in step 3).
 9. Report free/total space in Settings; one write → read → delete round trip.
+
+### TF socket (J1, TF-07F) — schematic-verified pinout
+
+Read directly off the vendor schematic for this module:
+
+| Pin | Signal | Connection |
+|---|---|---|
+| 1 | D2 | NOT CONNECTED |
+| 2 | CD/D3 | via the R15 / Q2 network below — this is the card's chip select in SPI mode |
+| 3 | CMD | `MOSI` net — shared with the LCD |
+| 4 | VDD | 3V3, with C7 100nF decoupling |
+| 5 | CLK | `SCLK` net — shared with the LCD |
+| 6 | VSS | GND |
+| 7 | D0 | `MISO` net — shared with the LCD |
+| 8 | D1 | NOT CONNECTED |
+| 9 | CD (card detect) | NOT CONNECTED |
+| 10 | GND | GND |
+
+⇒ What this settles:
+
+- **4-bit SDIO / `SD_MMC` is physically impossible on this panel.** DAT1, DAT2 and the
+  card-detect contact are all unconnected. Only 1-bit SPI mode is possible. (An earlier
+  note in this document already said the DAT1/DAT2 part of this — it was correct.)
+- **The TF slot is SPI-only and shares MOSI, SCLK and MISO with the ST7796.** There is no
+  separate `SD_MISO` / `SD_MOSI` / `SD_SCLK` pin, and none is needed.
+- **The card has NO card-detect line.** Do not look for `board.sdCardPresent()` support on
+  this board; presence must be discovered by the mount attempt.
+- The card is powered from the panel's own `3V3`, which is a **regulated output** — do not
+  tie it to the Heltec V4's 3.3 V rail. (Same rule as the panel's `3V3` pin, noted in 0.1.)
+
+⚠️ **Pin 7 (D0) IS routed to `MISO`, by direct trace** — no series component, no diode,
+nothing in between. **This corrects an earlier finding in this document:** a session
+concluded from an empty-socket continuity test that the TF MISO was unroutable. That
+conclusion is **withdrawn**.
+
+The reason that reading misled: **DAT0 is a recessed spring contact.** With no card
+inserted there is nothing to touch, so a continuity test from the `MISO` net to an empty
+socket reads as open by construction. To verify it, insert a card and measure from the
+card's DAT0 pad (card pin 7) back to the header `MISO`.
+
+⚠️ **The card's CS is NOT a plain `SD_CS` connection.** Between the `SD_CS` net and the
+socket's CD/D3 pin there is an active circuit:
+
+```
+SD_CS ──[R15 0R]──┬──→ J1 pin 2 (card CS)
+                  │
+             [Q2] NMOS — gate ← LCD_CS, source → GND
+                  │
+LCD_CS ───────────┤ (gate), with [R14 10K] pull-down to GND
+ └──[R16 NC, not fitted]──┘  (R16 bridges LCD_CS to the card-CS node when fitted)
+```
+
+⇒ **The finding this circuit produces: whenever `LCD_CS` is high, Q2 pulls the card's CS
+low, so the card is selected at idle regardless of what the SD CS GPIO does.** Two drivers
+then contend — Q2's low `RDS(on)` versus the GPIO's pull-up — and the MOSFET wins. This is
+a **latent hazard**: a selected card drives MISO onto the bus the LCD also shares.
+
+**The intended polarity of this circuit could NOT be determined from the schematic alone.**
+If SD fails to mount even with a card fitted, this circuit is the **prime suspect**, and
+the next diagnostic step is to log the actual `LCD_CS` (GPIO33) and `SD_CS` (GPIO17)
+levels at mount time.
+
+The circuit also implies the vendor's ordering requirement in step 4 as a hardware one:
+**SD initialisation must happen after LCD initialisation**, so that `LCD_CS` is idle-high
+before the card is addressed.
 
 **Acceptance [HW]:** card mounts, size reports, round trip succeeds, File Manager shows
 the volume, LCD unaffected throughout.
@@ -632,20 +756,23 @@ Steps:
 ## Open items, in risk order
 
 
-1. **SD bring-up** - the only disabled feature left (`CAP_SD=0`), and **not** a config
-   flip. `PIN_SD_CS=17` is already set; what is missing is `TFT_MISO=18`, the
-   `HELTEC_LORA_V4_ST7796` gate in `main.cpp` plus its own `TFT_eSPI::getSPIinstance()`
-   handle, and a mutex for the shared-`SPIClass` transaction nesting. Mount and prove
-   only - no log persistence, no tile backend. **[HW]**
-2. **GPIO18 reach is UNVERIFIED** - every SD fix above assumes the TF slot's MISO lands on
-   GPIO18. That claim comes from a comment transcribing the schematic, not from anything
-   provable in the repo: GPIO18 is in no wiring-table row and in no build flag. With
-   `TFT_MISO=-1` the card is *deterministically* unreadable, so confirm this by continuity
-   before writing a line of SD code. **[HW]**
+1. **SD mount-and-prove on real hardware** - the firmware half is **DONE and builds**
+   (2026-10-16): `TFT_MISO=18`, the `HELTEC_LORA_V4_ST7796` gate in `main.cpp` with a
+   `TFT_eSPI::getSPIinstance()` handle, and `CAP_SD=1`. What remains is **[HW]**:
+   flash it, confirm the card mounts, that size reports, one write → read → delete
+   round trip, and that the LCD is unaffected throughout. Mount and prove only - no
+   log persistence, no tile backend.
+2. ~~**GPIO18 reach is UNVERIFIED**~~ — **CLOSED (2026-10-16): the user CONFIRMED GPIO18
+   by measurement.** Removed from this list; see wiring table row 4 in 0.1 and Phase 3
+   step 1. (The old text read: every SD fix assumed the TF slot's MISO lands on GPIO18,
+   that claim came from a comment transcribing the schematic rather than from anything
+   provable in the repo, and it needed a continuity check first.)
 3. **SPI transaction nesting** - SD and the display share one `SPIClass`; TFT_eSPI is not
    reentrant and `beginTransaction` overwrites the shared clock divider. Nothing currently
    serialises the two, and parking `PIN_SD_CS` HIGH does **not** de-assert `LCD_CS`
-   (GPIO33). Needs a real mechanism, not just awareness.
+   (GPIO33). Needs a real mechanism, not just awareness. The mount branch now asserts
+   `TFT_CS` HIGH around the card transaction, which covers the mount itself but **not** a
+   panel refresh that lands during a later SD write.
 4. **Re-measure GPIO38 under load** before enabling SD. The overvoltage that used to be the
    top blocker is resolved (CardKB on 3.3 V, all lines now 3.3 V), but confirm it with the
    bus loaded rather than idle. **[HW]**
@@ -679,8 +806,11 @@ panel reset line, root cause #1), touch (commit `08f7fda`), the CardKB bus, and 
 - **Hardware revisions of SKU 29318.** No rev marker published; one schematic
   (2024-11-30) which does contain the TF slot. Treat "no revisions" as absence of
   evidence.
-- **The exact role of Q1/Q2 around `SD_CS`** in the module schematic. Irrelevant at 3.3V
-  logic; matters only if VCC/logic is ever driven at 5V.
+- **The exact role of Q1/Q2 around `SD_CS`** in the module schematic. The Q2 half is now
+  read directly off the schematic (NMOS, gate on `LCD_CS`, R14 10 kΩ pull-down, R16 NC —
+  see the TF socket subsection in Phase 3), but **the intended polarity still cannot be
+  determined from the schematic alone**, and it is **not** irrelevant at 3.3 V: as wired,
+  Q2 pulls the card's CS low whenever `LCD_CS` is high.
 - **Whether INT is read-clear (reg 0x00/0x01) or self-clearing in polling mode.**
   LovyanGFX and the app note conflict. We poll and ignore INT, so it does not block us —
   but a logic analyser would settle it.

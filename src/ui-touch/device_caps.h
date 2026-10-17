@@ -144,7 +144,7 @@
     #define CAP_TOUCH        1   // FT6336U at 0x38 on PIN_BOARD_SDA=38/SCL=4, driven by the
   #define CAP_ROTATABLE    0   // native 320x480 PORTRAIT; the UI runs a 480x320 landscape rotation (see St7796WaveshareDisplay.h)
   #define CAP_LARGE_SCREEN 0   // native 480x320, no upscaling
-  #define CAP_SD           0   // SPIFFS only
+  #define CAP_SD           1   // TF slot on the ST7796's SPI3, CS=17, MISO=18 (shares the display SPIClass)
   #define CAP_FILESYSTEM   0   // no browsable filesystem
   #define CAP_GPS          1
   #define CAP_OTA          1
