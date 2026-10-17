@@ -84,6 +84,15 @@ select OSM, and enable **Tiles from SD card**. See the
 [offline map tile guide](README.md#offline-map-tiles) for the QGIS export steps
 and map-provider policy requirements.
 
+## Web pages
+
+In the Web browser, **Up** and **Down** read the page: each press moves the
+highlight to the next link already on screen, or, when there is none, scrolls
+the text by about two-thirds of a screen. If the highlighted link scrolls out
+of view, the highlight moves to a link coming into view. Only at the top or
+bottom of the page does focus leave for the address bar or the toolbar.
+**OK** opens the highlighted link.
+
 ## Typing & editing
 
 Inside a text field the left/right arrows move the caret, and when the caret
@@ -96,10 +105,10 @@ While a chat message is focused and newer messages are below it, a down arrow
 appears at the right edge. Press **Right** to select it, then **OK** to jump to
 the newest message.
 
-Channels, direct messages, and room conversations place **#** and emoji to the
-left of the message input. With the caret at the start of the input, press Left
-to move to emoji, and Left again to move to **#**; Right walks back to the
-input. Press **OK** on either button to open its picker.
+Channels, direct messages, and room conversations place emoji and **#** to the
+right of the message input, next to Send. With the caret at the end of the
+input, press Right to move to emoji, and Right again to move to **#**; Left
+walks back to the input. Press **OK** on either button to open its picker.
 
 In the symbol grid, use all four arrows to move the highlight and **OK** to
 insert the selected character.

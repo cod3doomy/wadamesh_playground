@@ -973,6 +973,7 @@ void setup() {
 #endif
   WADA_STK();   // entry
   Serial.println("[BOOT] setup start");
+  Serial.printf("[BOOT] %s on meshcomod %s\n", FIRMWARE_VERSION, FIRMWARE_CORE_VERSION);
   // The SDK ships CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096: every allocation
   // under 4 KB is forced into internal DRAM even when PSRAM is free. On the V4
   // that is why internal sat at ~99% while 800+ KB of PSRAM went unused. Lower
@@ -1708,7 +1709,12 @@ void setup() {
 #if defined(ESP32_PLATFORM) && defined(HAS_TOUCH_UI)
   // The card holds this device's data but did not mount: say so on screen, and keep the
   // first-boot setup away (its "done" mark lives on the card too).
-  if (!sd_storage && touchPrefsReadUseSdAtBoot()) {
+  // Only when the card really did not mount (#667). "Store data on SD" can also be on
+  // while a card that mounts fine is deliberately not used: an earlier copy to the
+  // card never finished, so the device stays on internal storage and Settings offers
+  // the copy again (g_sd_migration_blocked). beta_94 told those devices their card
+  // could not be read, on every boot.
+  if (!sd_storage && touchPrefsReadUseSdAtBoot() && !sdMountDiagMounted()) {
     g_sd_fallback_boot = true;
     Serial.println("[BOOT] SD storage chosen but the card did not mount: running from internal storage");
   }

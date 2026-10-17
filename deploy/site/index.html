@@ -422,13 +422,17 @@
   .cookiebar a{color:var(--teal-ink); cursor:pointer}
   .cookiebar button{background:var(--accent-fill); color:var(--on-accent); border:0; border-radius:8px; padding:8px 16px; font-weight:650; cursor:pointer; font-size:.86rem; flex:none; font-family:inherit}
   /* the way in, straight under the intro */
-  .cta-row{margin-top:26px}
+  .cta-row{margin-top:26px; display:flex; flex-wrap:wrap; justify-content:center; gap:12px}
   .cta{display:inline-flex; align-items:center; gap:10px; padding:13px 26px; border-radius:100px;
     background:var(--accent-fill); color:var(--on-accent); font-weight:700; font-size:1.02rem; text-shadow:none;
     box-shadow:0 16px 36px -14px rgba(25,214,194,.6); transition:transform .15s, filter .15s}
   .cta:hover, .cta:focus-visible{transform:translateY(-2px); filter:brightness(1.08); outline:none}
   .cta:focus-visible{box-shadow:0 0 0 3px var(--bg), 0 0 0 5px var(--teal)}
   .cta svg{width:19px; height:19px}
+  .cta.alt{background:var(--control); color:var(--ink); box-shadow:inset 0 0 0 1px var(--line), var(--shadow);
+    -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px)}
+  .cta.alt svg{color:#5865F2}
+  .cta.alt:hover, .cta.alt:focus-visible{box-shadow:inset 0 0 0 1px #5865F2, var(--shadow)}
   /* a soft dark scrim behind the hero text, so it reads on the brightest part of the sky */
   header{position:relative; isolation:isolate}
   header::before{content:""; position:absolute; z-index:-1; left:50%; top:20px; transform:translateX(-50%);
@@ -465,6 +469,10 @@
   <a class="fab" style="--hue:var(--hue-msg)" id="docsBtn" href="docs.html" aria-label="Documentation" title="Documentation">
     <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/></svg></span>
     <span class="lb">Docs</span>
+  </a>
+  <a class="fab" style="--hue:var(--hue-radio)" id="appsBtn" href="apps.html" aria-label="App Store: every Lua app" title="App Store">
+    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/></svg></span>
+    <span class="lb">Apps</span>
   </a>
   <a class="fab" style="--hue:var(--hue-sys)" id="sdkBtn" href="sdk.html" aria-label="Lua app SDK" title="Lua app SDK">
     <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg></span>
@@ -525,7 +533,7 @@
     </div>
     <p class="lede">The whole mesh, on the radio itself.</p>
     <p class="sub">MeshCore firmware with chat, channels, contacts, a map and apps on the device itself, by touch, keyboard or trackball, <b>and</b> a companion radio for the <b>MeshCore app</b> at the same time. Runs on <a href="#devices">14 boards</a>, from the <b>LilyGo&nbsp;T-Deck</b> and <b>Heltec&nbsp;V4</b> to the <b>Tanmatsu</b>.</p>
-    <div class="cta-row"><a class="cta" href="#install"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M5 21h14"/></svg>Install WADAMESH</a></div>
+    <div class="cta-row"><a class="cta" href="#install"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M5 21h14"/></svg>Install WADAMESH</a><a class="cta alt" href="https://discord.gg/T8X2UaQ7Sm" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.369a19.79 19.79 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.249a18.27 18.27 0 0 0-5.487 0 12.6 12.6 0 0 0-.617-1.249.077.077 0 0 0-.079-.037A19.74 19.74 0 0 0 3.677 4.369a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.2 14.2 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.1 13.1 0 0 1-1.872-.892.077.077 0 0 1-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 0 1 .078-.01c3.927 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .079.009c.12.099.246.198.373.292a.077.077 0 0 1-.006.127 12.3 12.3 0 0 1-1.873.891.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.84 19.84 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.06.06 0 0 0-.031-.029zM8.02 15.331c-1.182 0-2.157-1.086-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.332-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.086-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.332-.946 2.418-2.157 2.418z"/></svg>Join the community</a></div>
     <div class="pills">
       <span class="pill" tabindex="0" style="--hue:var(--hue-place)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 20l-6-3V4l6 3 6-3 6 3v13l-6-3-6 3z"/><path d="M9 7v13M15 4v13"/></svg>Offline map
         <span class="pop"><b>Offline map</b>A real OpenStreetMap you can pan and zoom on the device. Pre-load tile packs to an SD card for fully offline use, or fetch over Wi-Fi, and see your contacts' GPS positions plotted on it.</span></span>
@@ -641,7 +649,7 @@
         <button type="button" data-wm-ch="stable" style="font:inherit;font-size:.85rem;font-weight:600;padding:7px 16px;border:0;background:var(--control);color:var(--mut);cursor:pointer">Stable</button>
         <button type="button" data-wm-ch="beta" style="font:inherit;font-size:.85rem;font-weight:600;padding:7px 16px;border:0;border-left:1px solid var(--line);background:var(--control);color:var(--mut);cursor:pointer">Beta · testing</button>
       </div>
-      <p style="margin:12px auto 0;max-width:600px;text-align:left;font-size:.88rem;line-height:1.6"><b>Stable</b> is the tested default. Pick it unless you want to help test. <b>Beta &middot; testing</b> gets new features and fixes earlier, before they are proven, so it can be rough. It is for trying things early and reporting bugs.<br>Already running WADAMESH? You do not have to reflash to switch channels: turn on <b>Settings &rarr; About &rarr; "Get test builds (beta)"</b> on the device and it updates to test builds over Wi-Fi. Switch it off to go back to stable.<br>Testing a beta? Report from the device (Settings &rarr; About &rarr; "Send a test report") and it shows up on the <a href="beta.html">test matrix</a>, which is what the next stable is promoted on.</p>
+      <p style="margin:12px auto 0;max-width:600px;text-align:left;font-size:.88rem;line-height:1.6"><b>Stable</b> is the tested default. Pick it unless you want to help test. <b>Beta &middot; testing</b> gets new features and fixes earlier, before they are proven, so it can be rough. It is for trying things early and reporting bugs.<br>Already running WADAMESH? You do not have to reflash to switch channels: turn on <b>Settings &rarr; Device &rarr; "Get test builds (beta)"</b> on the device and it updates to test builds over Wi-Fi. Switch it off to go back to stable.<br>Testing a beta? Report from the device (Settings &rarr; Device &rarr; "Send a test report") and it shows up on the <a href="beta.html">test matrix</a>, which is what the next stable is promoted on.</p>
       <p data-wm-betahint hidden style="margin:8px auto 0;font-size:.84rem;color:var(--warn);max-width:560px">Beta builds are newer and less tested: for trying things early and reporting bugs. On a T-Deck under Launcher you download the .bin and side-load it.</p>
       <details class="wn" data-whatsnew hidden style="margin:18px auto 0;max-width:560px;border-radius:12px;padding:13px 16px;text-align:left">
         <summary><span class="wn-caret" aria-hidden="true">&#9656;</span><span>See what&rsquo;s new in <span data-wn-tag style="color:var(--teal-ink)">the latest build</span><span data-wn-count class="wn-count"></span></span></summary>
@@ -852,8 +860,8 @@
       <details><summary>Is it really free?</summary><div class="a">Yes. WADAMESH is open source under GPL-3.0: no licence key and nothing locked. The code is on <a href="https://github.com/ALLFATHER-BV/wadamesh" target="_blank" rel="noopener">GitHub</a>.</div></details>
       <details><summary>Does it work with the MeshCore app?</summary><div class="a">Yes. The device can be the radio for the official MeshCore app on your phone (iOS and Android) over Bluetooth, Wi-Fi or USB, while you keep using it on its own. On the T-Display P4, Bluetooth pairing isn't available yet and on the Tanmatsu it has known gaps, so use Wi-Fi or USB there.</div></details>
       <details><summary>Will I keep my identity, contacts and channels?</summary><div class="a">Updating from the device keeps everything. A fresh install from this page can erase what is on the board, so make a backup first: <b>Settings &rarr; Backups &rarr; Export backup</b> saves your whole setup, including your node's identity, to the SD card when one is in. Without a card it stays on the board, so copy it off first with <a href="https://files.wadamesh.com" target="_blank" rel="noopener">USB Files</a>. <b>Restore</b> on the same page brings it back.</div></details>
-      <details><summary>How do I update later?</summary><div class="a">From the device. When a new build is out, <b>Settings &rarr; About</b> shows it and <b>Install update</b> flashes it over Wi-Fi, no computer needed. A T-Deck under Launcher updates through Launcher, and the Tanmatsu through its app store.</div></details>
-      <details><summary>Stable or Beta?</summary><div class="a"><b>Stable</b> is the tested build and the default. <b>Beta</b> gets new features and fixes first and can be rough: it is for trying things early and reporting bugs. Switch any time on the device with <b>Settings &rarr; About &rarr; Get test builds (beta)</b>.</div></details>
+      <details><summary>How do I update later?</summary><div class="a">From the device. When a new build is out, <b>Settings &rarr; Device</b> shows it and <b>Install update</b> flashes it over Wi-Fi, no computer needed. A T-Deck under Launcher updates through Launcher, and the Tanmatsu through its app store.</div></details>
+      <details><summary>Stable or Beta?</summary><div class="a"><b>Stable</b> is the tested build and the default. <b>Beta</b> gets new features and fixes first and can be rough: it is for trying things early and reporting bugs. Switch any time on the device with <b>Settings &rarr; Device &rarr; Get test builds (beta)</b>.</div></details>
       <details><summary>Why can't I install from my phone?</summary><div class="a">The firmware goes onto the board over a USB cable, and only Chrome and Edge on a computer let a web page do that. Open wadamesh.com on a computer. A Tanmatsu installs WADAMESH from its own app store.</div></details>
       <details><summary>My board isn't detected</summary><div class="a">Try another cable first: many USB cables only charge. Close anything else using the port, such as a serial monitor or another tab, then put the board in download mode. On a T-Deck, hold the trackball while you tap reset.</div></details>
       <details><summary>Can I go back to the original firmware?</summary><div class="a">Yes, nothing is locked. Flash stock MeshCore the same way from the official <a href="https://flasher.meshcore.io/" target="_blank" rel="noopener">MeshCore web flasher</a>, or your board maker's own firmware.</div></details>
@@ -873,6 +881,13 @@
         <h4>User guide</h4>
         <p>Every screen explained, from first boot and adding contacts through channels, room servers, the map and the settings that matter.</p>
         <span class="go">Read the guide</span>
+      </a>
+
+      <a class="rescard" style="--hue:var(--hue-radio)" href="apps.html">
+        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/></svg></span>
+        <h4>App Store</h4>
+        <p>Every app you can install from the Store on the device: radio tools, navigation, emergency messages, music and games.</p>
+        <span class="go">Browse the apps</span>
       </a>
 
       <a class="rescard" style="--hue:var(--hue-sys)" href="sdk.html">
