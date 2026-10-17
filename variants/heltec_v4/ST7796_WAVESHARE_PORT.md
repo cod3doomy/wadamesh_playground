@@ -567,9 +567,11 @@ in this order or you will burn a hardware session.
    additive gate extensions — no existing board's behaviour changed.
 
 4. **Init order is a vendor requirement:** Waveshare's demo states *"SD card
-   initialization must be placed after the LCD."* Mount SD only after the panel is up. ⚠️ The
-   schematic makes this a hardware requirement rather than only a demo convention — see the
-   Q2 network in the TF socket subsection below, which is keyed off `LCD_CS`.
+   initialization must be placed after the LCD."* Mount SD only after the panel is up. ⚠️ An
+   earlier pass here claimed the schematic also made this a *hardware* requirement, via a Q2
+   network keyed off `LCD_CS`. **That was wrong** — R16 is marked `NC`, so nothing couples
+   `LCD_CS` to the card's CS. Follow the vendor's ordering as a demo convention, not as an
+   electrical constraint on this module. See the TF socket subsection.
 5. **Keep the SD clock well below the LCD clock.** The shared bus runs at 40 MHz
    MEASURED for the LCD - and far too fast for a card. Interleaving high-speed LCD DMA
    fills with card reads is the classic failure here. `include/SdFastClock.h` exists as
@@ -599,9 +601,12 @@ in this order or you will burn a hardware session.
    after the panel is up (step 4) and not during a push. The runtime case — an SD write
    overlapping a later panel refresh — is still unguarded, and belongs to item 6.
 
-   ⚠️ **Worse: the card's CS is not driven by `PIN_SD_CS` alone.** The R15/Q2 network below
-   ties the card CS to `LCD_CS`, so this step is not merely a tidiness requirement on this
-   module — see the TF socket subsection.
+   ⚠️ **Correction to an earlier pass: the card's CS *is* driven by `PIN_SD_CS` alone.**
+   This step previously claimed the R15/Q2 network tied the card's CS to `LCD_CS`, so the
+   card was selected at idle and contended with the GPIO. That claim is **withdrawn** — R16
+   is marked `NC` (not fitted), so Q2 and R14 are electrically isolated from the card's CS
+   and gate nothing. Parking `PIN_SD_CS` HIGH genuinely de-asserts the card, and this step
+   remains a requirement about the *display* pad only. See the TF socket subsection.
 8. **`fmIsSd()` is NOT a gap — do not edit it.** `UITask.cpp` already gates on
    `#if CAP_SD ... return fs == &SD;`, so setting `CAP_SD=1` selects the correct
    definition automatically. The *"Heltec V4 ST7796 has no Arduino SD global in FM
@@ -617,7 +622,7 @@ Read directly off the vendor schematic for this module:
 | Pin | Signal | Connection |
 |---|---|---|
 | 1 | D2 | NOT CONNECTED |
-| 2 | CD/D3 | via the R15 / Q2 network below — this is the card's chip select in SPI mode |
+| 2 | CD/D3 | `SD_CS` net through R15 (0 Ω, fitted) — the card's chip select in SPI mode |
 | 3 | CMD | `MOSI` net — shared with the LCD |
 | 4 | VDD | 3V3, with C7 100nF decoupling |
 | 5 | CLK | `SCLK` net — shared with the LCD |
@@ -649,34 +654,60 @@ inserted there is nothing to touch, so a continuity test from the `MISO` net to 
 socket reads as open by construction. To verify it, insert a card and measure from the
 card's DAT0 pad (card pin 7) back to the header `MISO`.
 
-⚠️ **The card's CS is NOT a plain `SD_CS` connection.** Between the `SD_CS` net and the
-socket's CD/D3 pin there is an active circuit:
+⚠️ **The card's CS *is* a plain `SD_CS` connection. The "active circuit" finding that used
+to sit here is RETRACTED.** Re-read at high magnification, the card-CS network is:
 
 ```
-SD_CS ──[R15 0R]──┬──→ J1 pin 2 (card CS)
-                  │
-             [Q2] NMOS — gate ← LCD_CS, source → GND
-                  │
-LCD_CS ───────────┤ (gate), with [R14 10K] pull-down to GND
- └──[R16 NC, not fitted]──┘  (R16 bridges LCD_CS to the card-CS node when fitted)
+SD_CS ──[R15 0R]──┬──→ J1 pin 2 (CD/D3) = card CS
+                 │
+LCD_CS ──●──[Q2 gate]      Q2 source → GND
+         │                 Q2 drain ──[R16 "NC"]──┘
+    [R14 10K] to GND (gate pull-down)
 ```
 
-⇒ **The finding this circuit produces: whenever `LCD_CS` is high, Q2 pulls the card's CS
-low, so the card is selected at idle regardless of what the SD CS GPIO does.** Two drivers
-then contend — Q2's low `RDS(on)` versus the GPIO's pull-up — and the MOSFET wins. This is
-a **latent hazard**: a selected card drives MISO onto the bus the LCD also shares.
+**R16 is marked `NC` — NOT FITTED.** An unpopulated 0-ohm link is an open circuit, so
+**Q2 (and R14) are electrically isolated from the card's CS.** They gate nothing.
 
-**The intended polarity of this circuit could NOT be determined from the schematic alone.**
-If SD fails to mount even with a card fitted, this circuit is the **prime suspect**, and
-the next diagnostic step is to log the actual `LCD_CS` (GPIO33) and `SD_CS` (GPIO17)
-levels at mount time.
+⇒ **Corrected facts:**
+- The card's CS is simply `SD_CS` passed through `R15` (0 Ω, fitted).
+- There is **no contention**, **no Q2 effect**, and the card is **not** selected at idle.
+- MEASURED on the real board and consistent with this: card CS reads **3.3 V at idle**,
+  because `HeltecV4Board.cpp` parks `PIN_SD_CS` HIGH. That is the correct deselected state.
 
-The circuit also implies the vendor's ordering requirement in step 4 as a hardware one:
-**SD initialisation must happen after LCD initialisation**, so that `LCD_CS` is idle-high
-before the card is addressed.
+**What was retracted, and why it was wrong.** An earlier pass in this document claimed that
+whenever `LCD_CS` is high, Q2 pulls the card's CS low so the card is selected at idle
+regardless of what the SD CS GPIO does; that two drivers then contend on the CS node and the
+MOSFET wins; and that R15/R14/Q2 form an active CS-multiplex circuit which makes the vendor's
+LCD-before-SD ordering a *hardware* requirement. **All of that is withdrawn.** The single
+error behind it was reading R16 as a fitted link instead of an absent one — a
+low-visibility mistake, because in this schematic `NC` means the part is **not populated**,
+and the symbol looks the same either way. Recording it here so the next reader does not
+re-derive it.
+
+**What remains genuinely unresolved** is *why* the Q1/Q2/R14 network is drawn at all, and
+what polarity the vendor intended for it. That is not the current fault — see the failure
+note below.
 
 **Acceptance [HW]:** card mounts, size reports, round trip succeeds, File Manager shows
-the volume, LCD unaffected throughout.
+the volume, LCD unaffected throughout. **NOT MET — see the failure note below.**
+
+⚠️ **Current failure [HW] (2026-10-16, MEASURED on the real board):** with a card inserted
+and `TFT_MISO=18` in place, the mount fails with **`sdSelectCard(): Select Failed`** — the
+card does not answer `CMD0`. Readings taken at idle:
+
+| Node | Measured | What it means |
+|---|---|---|
+| Card VDD | 3.3 V | powered — rules out brownout |
+| Card CS | 3.3 V | correct deselected state (`HeltecV4Board.cpp` parks `PIN_SD_CS` HIGH) |
+| MISO | 0 V | expected — card deselected means MISO is high-Z |
+| MOSI | 0 V | expected — same |
+
+⚠️ **Idle DMM readings cannot observe a fault that only occurs during the transaction.**
+Every figure above is a *correct* idle state, and none of them can see what happens once
+`CMD0` is actually clocked out. The outstanding **decisive test** is end-to-end continuity
+from the card's **DAT0 pad** back to **GPIO18**, with the card inserted and power off (see
+the recessed-spring-contact note above). SD remains **CODE DONE, NOT YET PROVEN [HW]** —
+none of this marks it working.
 
 ---
 
@@ -806,11 +837,18 @@ panel reset line, root cause #1), touch (commit `08f7fda`), the CardKB bus, and 
 - **Hardware revisions of SKU 29318.** No rev marker published; one schematic
   (2024-11-30) which does contain the TF slot. Treat "no revisions" as absence of
   evidence.
-- **The exact role of Q1/Q2 around `SD_CS`** in the module schematic. The Q2 half is now
-  read directly off the schematic (NMOS, gate on `LCD_CS`, R14 10 kΩ pull-down, R16 NC —
-  see the TF socket subsection in Phase 3), but **the intended polarity still cannot be
-  determined from the schematic alone**, and it is **not** irrelevant at 3.3 V: as wired,
-  Q2 pulls the card's CS low whenever `LCD_CS` is high.
+- **The exact role of Q1 around `SD_CS`** in the module schematic. The Q2 half is now
+  read directly off the schematic (NMOS, gate on `LCD_CS`, R14 10 kΩ pull-down, and R16
+  marked `NC` between Q2's drain and the card-CS node — see the TF socket subsection in
+  Phase 3). Because R16 is **not fitted**, **Q2 and R14 are electrically isolated from the
+  card's CS and gate nothing**: the card's CS is `SD_CS` through R15 (0 Ω, fitted), with no
+  contention and no selection at idle. ⚠️ **An earlier pass in this document treated the
+  not-fitted R16 as a fitted link and concluded that Q2 pulls the card's CS low whenever
+  `LCD_CS` is high — that claim is RETRACTED**, and so is the contention and
+  CS-multiplex reading built on it. The error is recorded because `NC` here means the part is
+  *absent*, which is exactly the detail that is easy to miss. What still cannot be
+  determined from the schematic is **why the Q1/Q2/R14 network is drawn at all**, and that is
+  *not* the current mount failure — see the failure note in Phase 3.
 - **Whether INT is read-clear (reg 0x00/0x01) or self-clearing in polling mode.**
   LovyanGFX and the app note conflict. We poll and ignore INT, so it does not block us —
   but a logic analyser would settle it.
